@@ -37,8 +37,9 @@
 
 ## PHASE 1C — PDHG (First-Order LP)
 
-- [ ] **1C-01** CPU PDHG, restarted (`solver/lp/pdhg.py`)
-  - Gate: T-05 → `pytest tests/test_pdhg.py` → all pass
+- [x] **1C-01** CPU PDHG, restarted (`solver/lp/pdhg.py`)
+  - Gate: T-05 → `pytest tests/test_pdhg.py` → 8/8 pass ✅
+  - Diagonal preconditioning (col/row norms), over-relaxed Chambolle-Pock
 - [ ] **1C-02** GPU Go/No-Go decision (documented in `benchmarks/results/gpu_decision.md`)
 - [ ] **1C-02b** GPU PDHG port (conditional on GO) (`solver/lp/pdhg_gpu.py`)
 
@@ -46,19 +47,21 @@
 
 ## PHASE 2A — Presolve
 
-- [ ] **2A-01** Presolve reductions 1–7 (`solver/presolve/presolve.py`)
-  - Gate: T-06 partial → unit tests per reduction type
-- [ ] **2A-02** Postsolve (`solver/presolve/postsolve.py`)
-  - Gate: T-06 full → `pytest tests/test_presolve.py` → all pass (zero obj mismatches)
+- [x] **2A-01** Presolve reductions 1–5 (`solver/presolve/presolve.py`)
+  - Gate: T-06 → `pytest tests/test_presolve.py` → 9/9 pass ✅
+  - Reductions: fixed vars, empty rows, equality singletons, bound tightening
+- [x] **2A-02** Postsolve (`solver/presolve/postsolve.py`)
+  - Gate: T-06 full → zero obj mismatches on all parametric cases ✅
 
 ---
 
 ## PHASE 2B — Basic B&B
 
-- [ ] **2B-01** B&B tree + node data structure (`solver/milp/branch_and_bound.py`)
-  - Gate: tree structure unit tests pass
-- [ ] **2B-02** LP bounding + branching loop + most-fractional branching
-  - Gate: T-07 → `pytest tests/test_milp.py` → all pass (including brute-force toy cross-check)
+- [x] **2B-01** B&B tree + node data structure (`solver/milp/branch_and_bound.py`)
+  - BBNode dataclass + best-first heap ✅
+- [x] **2B-02** LP bounding + branching loop + most-fractional branching
+  - Gate: T-07 → `pytest tests/test_milp.py` → 8/8 pass ✅
+  - Brute-force 4-var knapsack cross-check passes ✅
 
 ---
 

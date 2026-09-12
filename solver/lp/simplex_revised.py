@@ -89,17 +89,41 @@ def _build_standard_form(problem: Problem):
     n_orig = problem.n_vars
     m_ub = problem.n_ineq
     m_eq = problem.n_eq
-    m_total = m_ub + m_eq
 
     # Shift variables: x' = x - lb ≥ 0
     lb = problem.lb.copy()
+    ub = problem.ub.copy()
     lb_finite = np.where(np.isfinite(lb), lb, 0.0)
     b_ub_s = problem.b_ub - problem.A_ub.dot(lb_finite)
     b_eq_s = problem.b_eq - problem.A_eq.dot(lb_finite)
     c_s = problem.c.copy()
 
+    # Add upper bound rows: for finite ub[j], add x'_j ≤ ub[j] - lb[j]
+    ub_shift = ub - lb_finite
+    finite_ub_mask = np.isfinite(ub) & np.isfinite(lb_finite)
+    # Only add bounds that are actually tighter than the default (infinite)
+    finite_ub_cols = np.where(finite_ub_mask)[0]
+    if len(finite_ub_cols) > 0:
+        A_ub_extra = np.zeros((len(finite_ub_cols), n_orig))
+        for k, j in enumerate(finite_ub_cols):
+            A_ub_extra[k, j] = 1.0
+        b_ub_extra = ub_shift[finite_ub_cols]
+        # Stack onto existing A_ub / b_ub
+        A_ub_orig = problem.A_ub.toarray() if m_ub > 0 else np.zeros((0, n_orig))
+        A_ub_combined = np.vstack([A_ub_orig, A_ub_extra])
+        b_ub_combined = np.concatenate([b_ub_s, b_ub_extra])
+        # Build problem attrs for this function
+        _A_ub = A_ub_combined
+        _b_ub = b_ub_combined
+        m_ub = m_ub + len(finite_ub_cols)
+    else:
+        _A_ub = problem.A_ub.toarray() if problem.n_ineq > 0 else np.zeros((0, n_orig))
+        _b_ub = b_ub_s
+
+    m_total = m_ub + m_eq
+
     # Determine which ineq rows need an artificial
-    neg_ub_rows = np.where(b_ub_s < -FEASIBILITY_TOL)[0]
+    neg_ub_rows = np.where(_b_ub < -FEASIBILITY_TOL)[0]
     pos_ub_rows = np.setdiff1d(np.arange(m_ub), neg_ub_rows)
 
     n_slacks = m_ub          # one slack per ineq row
@@ -113,25 +137,26 @@ def _build_standard_form(problem: Problem):
     rows_data = []  # list of (row_vec, rhs_val)
     basis0 = np.zeros(m_total, dtype=int)
 
-    A_orig_ub = problem.A_ub.toarray() if m_ub > 0 else np.zeros((0, n_orig))
+    # Use the combined A_ub (with upper-bound rows added) and b_ub
+    A_orig_ub = _A_ub  # already a numpy dense array (shape m_ub × n_orig)
     A_orig_eq = problem.A_eq.toarray() if m_eq > 0 else np.zeros((0, n_orig))
 
     art_col = art_start  # running column index for next artificial
 
     for i in range(m_ub):
         row = np.zeros(n_aug)
-        if b_ub_s[i] >= -FEASIBILITY_TOL:
+        if _b_ub[i] >= -FEASIBILITY_TOL:
             # Normal case: slack forms initial basis
             row[:n_orig] = A_orig_ub[i]
             row[n_orig + i] = 1.0   # slack
-            rows_data.append((row, b_ub_s[i]))
+            rows_data.append((row, _b_ub[i]))
             basis0[i] = n_orig + i  # slack is basic
         else:
             # Negative RHS: flip row, add surplus (-slack) + artificial
             row[:n_orig] = -A_orig_ub[i]
-            row[n_orig + i] = -1.0  # surplus (flipped slack, will be 0 in BFS)
+            row[n_orig + i] = -1.0  # surplus
             row[art_col] = 1.0      # artificial
-            rows_data.append((row, -b_ub_s[i]))
+            rows_data.append((row, -_b_ub[i]))
             basis0[i] = art_col
             art_col += 1
 
@@ -143,8 +168,12 @@ def _build_standard_form(problem: Problem):
         basis0[m_ub + j] = art_col
         art_col += 1
 
-    A_aug = np.array([r for r, _ in rows_data])
-    b_aug = np.array([v for _, v in rows_data])
+    if rows_data:
+        A_aug = np.array([r for r, _ in rows_data])
+        b_aug = np.array([v for _, v in rows_data])
+    else:
+        A_aug = np.zeros((0, n_aug))
+        b_aug = np.zeros(0)
 
     # Objective: original + Big-M on artificials
     c_aug = np.concatenate([c_s, np.zeros(n_slacks), np.full(n_art, BIG_M)])
@@ -190,6 +219,14 @@ def solve_lp_revised(
      n_orig, n_aug, art_start, n_art, BIG_M) = _build_standard_form(problem)
 
     m = A_aug.shape[0]
+
+    # Edge case: no constraints → optimal at lower bound (x' = 0)
+    if m == 0 or n_aug == 0:
+        x_orig = lb_finite.copy()
+        obj_val = float(problem.c @ x_orig)
+        if problem.sense == "max":
+            obj_val = -obj_val
+        return SolveResult("optimal", x_orig, obj_val, 0)
 
     if basis is None:
         basis = basis0.copy()
