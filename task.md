@@ -10,12 +10,12 @@
 
 ## PHASE 1A — Foundation
 
-- [ ] **1A-01** Project scaffold, `Problem` dataclass, `is_feasible()`, `config.py`, CLI stub, `tests/test_env.py`
-  - Gate: `pytest tests/test_env.py` → all pass
-- [ ] **1A-02** MPS Reader (`solver/io/mps_reader.py`)
-  - Gate: T-01 → `pytest tests/test_mps_reader.py` → all pass
-- [ ] **1A-03** Dense tableau simplex scaffold (`solver/lp/simplex_dense.py`)
-  - Gate: T-02 → `pytest tests/test_simplex.py::test_dense_toy` → all pass
+- [x] **1A-01** Project scaffold, `Problem` dataclass, `is_feasible()`, `config.py`, CLI stub, `tests/test_env.py`
+  - Gate: `pytest tests/test_env.py` → all pass ✅
+- [x] **1A-02** MPS Reader (`solver/io/mps_reader.py`)
+  - Gate: T-01 → `pytest tests/test_mps_reader.py` → all pass ✅ (31 passed, afiro skipped — no internet)
+- [x] **1A-03** Dense tableau simplex scaffold (`solver/lp/simplex_dense.py`)
+  - Gate: T-02 → `pytest tests/test_simplex.py::test_dense_simplex_*` → all pass ✅
 
 ---
 
