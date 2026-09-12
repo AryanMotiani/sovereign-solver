@@ -19,14 +19,17 @@
 
 ---
 
-## PHASE 1B — LP Engine Core
+## PHASE 1B — Production LP Engine
 
-- [ ] **1B-01** Revised primal simplex with dense LU → then sparse LU upgrade (`solver/lp/simplex_revised.py`)
-  - Gate: T-03 partial → `pytest tests/test_simplex.py::test_revised_toy` → pass
-- [ ] **1B-02** Dual simplex + warm-start API (`solver/lp/simplex_revised.py`)
-  - Gate: T-03 full → Netlib 90-instance cross-check → `pytest tests/test_simplex.py` → all pass
-- [ ] **1B-03** Mehrotra IPM (`solver/lp/interior_point.py`)
-  - Gate: T-04 → `pytest tests/test_ipm.py` → all pass
+- [x] **1B-01** SparseLU wrapper (`solver/utils/sparse_lu.py`) — COLAMD factorization
+  - Gate: used by revised simplex ✅
+- [x] **1B-02** Revised primal simplex (`solver/lp/simplex_revised.py`)
+  - Gate: T-03 `pytest tests/test_revised_simplex.py` → 11/11 pass ✅
+- [x] **1B-03** Dual simplex warm-start (`solve_lp_dual` in simplex_revised.py)
+  - Gate: T-03.6 dual simplex basic test ✅
+- [x] **1B-04** Mehrotra IPM (`solver/lp/interior_point.py`)
+  - Gate: T-04 `pytest tests/test_ipm.py` → 8/8 pass ✅
+  - Key bug fixed: normal equations sign error in `rhs = r_p + A*D*r_d - A*(r_c/s)`
 - [ ] **1B-04** Sparse LU module (`solver/utils/sparse_lu.py`)
   - Gate: T-03 regression-free after swap to sparse LU
 

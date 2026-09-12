@@ -35,7 +35,6 @@ from solver.problem import Problem
 
 class SolveResult:
     """Holds the output of a solver call."""
-    __slots__ = ("status", "x", "objective", "iterations", "message")
 
     def __init__(
         self,
@@ -44,12 +43,16 @@ class SolveResult:
         objective: float,
         iterations: int,
         message: str = "",
+        basis: Optional[np.ndarray] = None,
+        gaps: Optional[list] = None,
     ):
         self.status = status        # 'optimal' | 'infeasible' | 'unbounded' | 'iteration_limit'
         self.x = x                  # solution vector (None if not available)
         self.objective = objective  # objective value at x (original sense)
         self.iterations = iterations
         self.message = message
+        self.basis = basis          # final basis (ndarray of col indices) for warm-starting
+        self.gaps = gaps or []      # duality gaps per IPM iteration
 
     def __repr__(self) -> str:
         obj_str = f"{self.objective:.6g}" if self.objective is not None else "N/A"

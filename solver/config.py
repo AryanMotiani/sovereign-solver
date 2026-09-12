@@ -14,7 +14,9 @@ ADMM_TOL: float = 1e-4          # ADMM primal/dual residual tolerance (QP)
 INTEGER_TOL: float = 1e-5       # |x - round(x)| threshold for integer feasibility
 
 # ── Simplex ───────────────────────────────────────────────────────────────────
-REFACTORIZE_EVERY: int = 50     # Re-factorize the basis matrix every N pivots
+REFACTORIZE_EVERY: int = 1      # Re-factorize the basis matrix every N pivots
+                                  # Set to 1 until eta-file/rank-1 updates are implemented
+                                  # (Ticket 1B-04 stretch goal in master_implementation_plan.md)
 MAX_SIMPLEX_ITERS: int = 100_000
 BLAND_RULE_THRESHOLD: int = 200  # Switch to Bland's rule after this many iterations
                                   # (anti-cycling safety net)
