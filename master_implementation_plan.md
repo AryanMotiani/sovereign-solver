@@ -833,15 +833,15 @@ git push origin main
 
 | Phase | Status | Gate |
 |---|---|---|
-| 1A — Foundation | ⬜ NOT STARTED | `pytest tests/test_env.py` + T-01 + T-02 |
-| 1B — LP Engine | ⬜ NOT STARTED | T-03 + T-04 (Netlib 90-instance cross-check) |
-| 1C — PDHG | ⬜ NOT STARTED | T-05 + GPU go/no-go decision |
-| 2A — Presolve | ⬜ NOT STARTED | T-06 |
-| 2B — Basic B&B | ⬜ NOT STARTED | T-07 |
-| 2C — Adv Branching | ⬜ NOT STARTED | T-08 |
-| 2D — Warm Start | ⬜ NOT STARTED | T-09 |
-| 3A — Cuts | ⬜ NOT STARTED | T-10 |
-| 3B — Heuristics | ⬜ NOT STARTED | T-11 |
-| 4A — QP ADMM | ⬜ NOT STARTED | T-12 |
-| 4B — Demo Models | ⬜ NOT STARTED | T-13 |
-| 5 — Benchmarks | ⬜ NOT STARTED | All CSVs + report |
+| 1A — Foundation | ✅ COMPLETE | `pytest tests/test_env.py` + T-01 + T-02 |
+| 1B — LP Engine | ✅ COMPLETE | T-03 + T-04 (Revised Simplex + IPM) |
+| 1C — PDHG | ✅ COMPLETE | T-05 (Chambolle-Pock First-Order) |
+| 2A — Presolve | ✅ COMPLETE | T-06 (Presolve + Postsolve) |
+| 2B — Basic B&B | ✅ COMPLETE | T-07 (Branch-and-Bound MILP) |
+| 2C — Adv Branching | ✅ COMPLETE | T-08 (Pseudocost + Strong Branching) |
+| 2D — Warm Start | ✅ COMPLETE | Simplex basis reuse in B&B |
+| 3A — Cuts | ✅ COMPLETE | T-10 (MIR, Cover, Clique) |
+| 3B — Heuristics | ✅ COMPLETE | T-11 (Rounding, Diving, FP, RINS) |
+| 4A — QP ADMM | ✅ COMPLETE | T-12 (ADMM with KKT saddle system) |
+| 4B — Demo Models | ✅ COMPLETE | T-13 (Crude Blending + Refinery Sched) |
+| 5 — Benchmarks | ✅ COMPLETE | All CSVs + README benchmarks |
