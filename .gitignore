@@ -1,0 +1,33 @@
+# Build & Compiled artifacts
+bin/
+obj/
+build/
+target/
+dist/
+*.exe
+*.o
+*.obj
+*.dll
+*.so
+*.dylib
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+env/
+venv/
+*.egg-info/
+
+# Rust / C++
+Cargo.lock
+CMakeCache.txt
+CMakeFiles/
+
+# IDE & OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.log
