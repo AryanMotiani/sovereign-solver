@@ -1,0 +1,8 @@
+variable,value,unit
+status,optimal,
+C1_kL,0.00,kL/day
+C2_kL,4000.00,kL/day
+C3_kL,2000.00,kL/day
+diesel_kL,3000.00,kL/day
+naphtha_kL,1900.00,kL/day
+profit_Rs,-109000,Rs/day

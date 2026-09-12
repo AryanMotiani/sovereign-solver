@@ -50,8 +50,11 @@ LOCAL_BRANCH_NODE_LIMIT: int = 500  # Sub-MIP node budget for Local Branching
 
 # ── ADMM / QP ─────────────────────────────────────────────────────────────────
 ADMM_MAX_ITERS: int = 10_000
+ADMM_RHO: float = 1.0               # Default ADMM penalty parameter (ρ)
 ADMM_RHO_INIT: float = 1.0          # Initial ADMM penalty parameter
 ADMM_RHO_ADAPT_RATIO: float = 10.0  # Re-factor if rho changes by this ratio
+ADMM_TOL_ABS: float = 1e-4          # Absolute primal/dual residual tolerance
+ADMM_TOL_REL: float = 1e-3          # Relative primal/dual residual tolerance
 
 # ── Warm-start fallover ───────────────────────────────────────────────────────
 WARMSTART_FAILOVER_ITERS: int = 200  # Fall back to cold-start if warm-start stalls
