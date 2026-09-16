@@ -22,6 +22,7 @@ CLI::
 from solver.solver import Solver
 from solver.problem import Problem
 from solver.lp.simplex_dense import SolveResult
+from solver.lp.pdhg_gpu import solve_lp_pdhg_gpu, get_available_device
 from solver.milp.branch_and_bound import MILPSolveResult
 from solver.qp.admm import QPResult
 from solver.io.mps_reader import read_mps
@@ -32,5 +33,6 @@ __version__ = "0.3.0-alpha"
 __all__ = [
     "Solver", "Problem",
     "SolveResult", "MILPSolveResult", "QPResult",
+    "solve_lp_pdhg_gpu", "get_available_device",
     "read_mps", "read_lp", "read_qps",
 ]

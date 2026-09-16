@@ -63,7 +63,7 @@ class Solver:
 
     # ── Solve ─────────────────────────────────────────────────────────────────
 
-    def solve(self, method: str = "auto"):
+    def solve(self, method: str = "auto", device: str = "auto"):
         """
         Solve the currently loaded problem.
 
@@ -71,13 +71,16 @@ class Solver:
         ----------
         method : str
             Solver method to use:
-            - 'auto'    : choose based on problem type
-            - 'simplex' : dense simplex (Phase 1A scaffold)
-            - 'revised' : revised sparse simplex (Phase 1B)
-            - 'ipm'     : Mehrotra interior-point (Phase 1B)
-            - 'pdhg'    : first-order PDHG (Phase 1C)
-            - 'milp'    : branch-and-cut (Phase 2B+, with presolve/cuts/heuristics)
-            - 'qp'      : ADMM (Phase 4A)
+            - 'auto'     : choose based on problem type
+            - 'simplex'  : dense simplex (Phase 1A scaffold)
+            - 'revised'  : revised sparse simplex (Phase 1B)
+            - 'ipm'      : Mehrotra interior-point (Phase 1B)
+            - 'pdhg'     : first-order PDHG (Phase 1C)
+            - 'pdhg_gpu' : GPU-accelerated restarted PDHG (Ticket 1C-02b)
+            - 'milp'     : branch-and-cut (Phase 2B+, with presolve/cuts/heuristics)
+            - 'qp'       : ADMM (Phase 4A)
+        device : str, default 'auto'
+            Compute device target for GPU methods ('auto', 'cuda', 'mps', or 'cpu').
 
         Returns
         -------
@@ -111,6 +114,10 @@ class Solver:
             from solver.lp.pdhg import solve_lp_pdhg
             result = solve_lp_pdhg(prob)
 
+        elif method == "pdhg_gpu":
+            from solver.lp.pdhg_gpu import solve_lp_pdhg_gpu
+            result = solve_lp_pdhg_gpu(prob, device=device)
+
         elif method == "milp":
             from solver.milp.branch_and_bound import solve_milp
             result = solve_milp(prob)
@@ -137,7 +144,7 @@ class Solver:
         else:
             raise ValueError(
                 f"Unknown method {method!r}. "
-                "Choose: auto, simplex, revised, ipm, pdhg, milp, qp"
+                "Choose: auto, simplex, revised, ipm, pdhg, pdhg_gpu, milp, qp"
             )
 
         self._result = result

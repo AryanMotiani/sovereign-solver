@@ -39,9 +39,10 @@
 
 - [x] **1C-01** CPU PDHG, restarted (`solver/lp/pdhg.py`)
   - Gate: T-05 → `pytest tests/test_pdhg.py` → 8/8 pass ✅
-  - Diagonal preconditioning (col/row norms), over-relaxed Chambolle-Pock
-- [ ] **1C-02** GPU Go/No-Go decision (documented in `benchmarks/results/gpu_decision.md`)
-- [ ] **1C-02b** GPU PDHG port (conditional on GO) (`solver/lp/pdhg_gpu.py`)
+- [x] **1C-02** GPU Go/No-Go decision (documented in `benchmarks/results/gpu_decision.md`) ✅
+  - Gate: empirical analysis vs simplex + literature citations (cuPDLP.jl, Blin et al. 2026)
+- [x] **1C-02b** GPU PDHG port (`solver/lp/pdhg_gpu.py`) ✅
+  - Gate: `pytest tests/test_pdhg_gpu.py` → 9/9 pass; CLI `--method pdhg_gpu` & `--device` supported; CPU fallback verified
 
 ---
 

@@ -49,11 +49,16 @@ def cmd_solve(args: argparse.Namespace) -> None:
     prob = s.problem
     print(f"Problem: {prob}")
     print(f"Method:  {args.method}")
+    if hasattr(args, "device") and args.device:
+        print(f"Device:  {args.device}")
     print("Solving ...")
 
     t0 = time.perf_counter()
     try:
-        result = s.solve(method=args.method)
+        kwargs = {"method": args.method}
+        if hasattr(args, "device") and args.device:
+            kwargs["device"] = args.device
+        result = s.solve(**kwargs)
     except Exception as e:
         print(f"ERROR during solve: {e}", file=sys.stderr)
         sys.exit(1)
@@ -115,8 +120,14 @@ def main() -> None:
     p_solve.add_argument(
         "--method",
         default="auto",
-        choices=["auto", "simplex", "revised", "ipm", "pdhg", "milp", "qp"],
+        choices=["auto", "simplex", "revised", "ipm", "pdhg", "pdhg_gpu", "milp", "qp"],
         help="Solver method (default: auto)",
+    )
+    p_solve.add_argument(
+        "--device",
+        default="auto",
+        choices=["auto", "cuda", "mps", "cpu"],
+        help="Compute device for GPU methods (default: auto)",
     )
     p_solve.add_argument("--verbose", action="store_true", help="Print full solution vector")
 
