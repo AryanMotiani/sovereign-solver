@@ -99,8 +99,9 @@ def read_mps(path: str) -> Problem:
     section: str = ""
 
     for raw_line in lines:
-        # Fixed-format MPS: non-blank lines starting in col 1 are section headers
-        if not raw_line.strip():
+        # Ignore blank lines and comment lines (starting with *)
+        stripped = raw_line.strip()
+        if not stripped or stripped.startswith("*"):
             continue
 
         # Section header: starts at column 0 (no leading space)

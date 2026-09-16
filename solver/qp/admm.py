@@ -5,22 +5,24 @@ Quadratic Program (QP) solver via ADMM (Alternating Direction Method of Multipli
 
 Solves:
     min  ½ xᵀQx + cᵀx
-    s.t. Ax = b,  x ≥ 0
+    s.t. A_eq x = b_eq,
+         A_ub x ≤ b_ub,
+         lb ≤ x ≤ ub
 
 where Q is a positive semi-definite (PSD) matrix.
 
-ADMM formulation (Boyd et al. 2010):
-  Augmented Lagrangian split: introduce auxiliary z ≥ 0, constraint x = z.
+ADMM formulation (Boyd et al. 2010, Stellato et al. OSQP 2020):
+  Augmented Lagrangian split: introduce auxiliary z, constraint w = z where w = [x; s].
 
-  x-update:  min ½ xᵀQx + cᵀx + (ρ/2)‖x - z + u‖²   (unconstrained QP with linear solve)
-  z-update:  z = max(x + u, 0)                          (projection onto x ≥ 0)
-  u-update:  u ← u + x - z                              (dual variable update)
+  x-update:  solve [Q_ext + ρI   A_extᵀ] [w] = [-c_ext + ρ(z - u)]
+                   [A_ext        0     ] [ν]   [b_ext            ]
+  z-update:  z = clip(w + u, lb_w, ub_w)
+  u-update:  u ← u + w - z
 
-  Termination: primal residual ‖x - z‖ and dual residual ‖ρ(z - z_old)‖ both < tol.
-
-Extensions:
-  - Linear (LP) problems: Q=0 case handled via standard ADMM with identity penalty.
-  - Equality constraints: added as additional penalty ρ₂‖Ax - b‖²/2.
+Hardening features:
+  - Adaptive ρ (Boyd et al. §3.4.1) balancing primal and dual residuals.
+  - Warm-starting support (x_init, u_init).
+  - Solution polishing (OSQP §5.2) solving reduced KKT on the active set.
 
 References:
     Boyd et al. (2010) "Distributed Optimization via ADMM", Foundations & Trends.
@@ -33,13 +35,14 @@ import dataclasses
 from typing import Optional
 
 import numpy as np
-import scipy.linalg as sla
 import scipy.sparse as sp
 import scipy.sparse.linalg as spla
 
 from solver.config import (
     ADMM_MAX_ITERS,
+    ADMM_POLISH,
     ADMM_RHO,
+    ADMM_RHO_ADAPT_MU,
     ADMM_TOL_ABS,
     ADMM_TOL_REL,
 )
@@ -75,12 +78,13 @@ class QPProblem:
 
 @dataclasses.dataclass
 class QPResult:
-    status:    str            # 'optimal' | 'max_iters' | 'infeasible'
-    x:         Optional[np.ndarray]
-    objective: float
-    iters:     int
-    primal_res: float = 0.0
-    dual_res:   float = 0.0
+    status:      str            # 'optimal' | 'max_iters' | 'infeasible'
+    x:           Optional[np.ndarray]
+    objective:   float
+    iters:       int
+    primal_res:  float = 0.0
+    dual_res:    float = 0.0
+    u:           Optional[np.ndarray] = None   # Dual multipliers for warm-start
 
 
 # ── ADMM solver ───────────────────────────────────────────────────────────────
@@ -91,24 +95,30 @@ def solve_qp_admm(
     max_iters: int = ADMM_MAX_ITERS,
     tol_abs: float = ADMM_TOL_ABS,
     tol_rel: float = ADMM_TOL_REL,
+    adaptive_rho: bool = True,
+    polish: bool = ADMM_POLISH,
+    x_init: Optional[np.ndarray] = None,
+    u_init: Optional[np.ndarray] = None,
     verbose: bool = False,
 ) -> QPResult:
     """
-    Solve a QP using ADMM.
-
-    Strategy:
-      1. Convert inequality constraints Aᵤ x ≤ bᵤ to equalities by adding
-         slack variables: introduce s ≥ 0 with Aᵤ x + s = bᵤ.
-      2. Stack [x; s] into a single extended variable w.
-      3. Run ADMM on the extended problem with x-update via a cached factorization.
+    Solve a QP using ADMM with adaptive rho and solution polishing.
 
     Parameters
     ----------
-    problem  : QPProblem
-    rho      : ADMM penalty parameter
-    max_iters: max iterations
-    tol_abs  : absolute residual tolerance
-    tol_rel  : relative residual tolerance
+    problem : QPProblem
+    rho : float
+        ADMM penalty parameter.
+    max_iters : int
+        Maximum ADMM iterations.
+    tol_abs, tol_rel : float
+        Absolute and relative stopping tolerances.
+    adaptive_rho : bool
+        Adjust rho to balance primal and dual residuals.
+    polish : bool
+        Solve unconstrained KKT on active set to achieve high precision.
+    x_init, u_init : Optional[np.ndarray]
+        Warm-start primal and dual variables.
 
     Returns
     -------
@@ -117,17 +127,13 @@ def solve_qp_admm(
     n    = problem.n
     m_eq = problem.m_eq
     m_ub = problem.m_ub
-    n_s  = m_ub             # slack variables for inequalities
-    n_w  = n + n_s          # extended variable dimension: [x; s]
+    n_s  = m_ub
+    n_w  = n + n_s
 
     # ── Build extended system ──────────────────────────────────────────────────
-    # Extended Q_ext block: Q on x-part, 0 on slack part
     Q_ext = sp.block_diag([problem.Q, sp.csr_matrix((n_s, n_s))], format="csr")
     c_ext = np.concatenate([problem.c, np.zeros(n_s)])
 
-    # Equality constraints on extended variable:
-    #   [A_eq | 0  ] w = b_eq
-    #   [A_ub | I  ] w = b_ub   (inequality converted via slack)
     if m_eq > 0 and m_ub > 0:
         A_top = sp.hstack([problem.A_eq, sp.csr_matrix((m_eq, n_s))], format="csr")
         A_bot = sp.hstack([problem.A_ub, sp.eye(n_s, format="csr")],  format="csr")
@@ -147,35 +153,40 @@ def solve_qp_admm(
         b_ext = np.zeros(0)
         m_ext = 0
 
-    # Bound: lb_w = [lb | 0], ub_w = [ub | inf]
     lb_w = np.concatenate([problem.lb, np.zeros(n_s)])
     ub_w = np.concatenate([problem.ub, np.full(n_s, np.inf)])
 
-    # ── KKT factorization for x-update ────────────────────────────────────────
-    # Saddle-point system:
-    #   [Q_ext + ρI   A_ext^T] [w ] = [-c_ext + ρ(z-u)]
-    #   [A_ext        0      ] [ν ] = [b_ext            ]
-    # Factor once, solve each iteration for right-hand side.
-    n_kkt = n_w + m_ext
-    KKT_top = sp.hstack([Q_ext + rho * sp.eye(n_w, format="csr"), A_ext.T], format="csr")
-    if m_ext > 0:
-        KKT_bot = sp.hstack([A_ext, sp.csr_matrix((m_ext, m_ext))], format="csr")
-        KKT = sp.vstack([KKT_top, KKT_bot], format="csc")
-    else:
-        KKT = KKT_top.tocsc()
+    # ── KKT factorization helper ──────────────────────────────────────────────
+    def _factor_kkt(rho_val: float):
+        KKT_top = sp.hstack([Q_ext + rho_val * sp.eye(n_w, format="csr"), A_ext.T], format="csr")
+        if m_ext > 0:
+            KKT_bot = sp.hstack([A_ext, sp.csr_matrix((m_ext, m_ext))], format="csr")
+            KKT = sp.vstack([KKT_top, KKT_bot], format="csc")
+        else:
+            KKT = KKT_top.tocsc()
+        return spla.splu(KKT)
 
     try:
-        factor = spla.splu(KKT)
+        factor = _factor_kkt(rho)
     except Exception:
         return QPResult("infeasible", None, np.inf, 0)
 
     # ── Initialize ─────────────────────────────────────────────────────────────
     w = np.zeros(n_w)
-    z = np.zeros(n_w)    # auxiliary (projection target)
-    u = np.zeros(n_w)    # scaled dual variable
+    if x_init is not None:
+        w[:min(n, len(x_init))] = x_init[:min(n, len(x_init))]
+        if m_ub > 0:
+            # Initialize slacks
+            w[n:] = np.maximum(0.0, problem.b_ub - problem.A_ub.dot(w[:n]))
+
+    z = np.clip(w.copy(), lb_w, ub_w)
+    u = np.zeros(n_w)
+    if u_init is not None:
+        u[:min(n_w, len(u_init))] = u_init[:min(n_w, len(u_init))]
 
     status = "max_iters"
     primal_res = dual_res = np.inf
+    adapt_interval = 25
 
     for it in range(1, max_iters + 1):
         # ── x-update: solve KKT system ─────────────────────────────────────────
@@ -193,23 +204,127 @@ def solve_qp_admm(
 
         # ── Convergence check ──────────────────────────────────────────────────
         w = w_new
-        primal_res = np.linalg.norm(w - z)
-        dual_res   = rho * np.linalg.norm(z - z_old)
+        primal_res = float(np.linalg.norm(w - z))
+        dual_res   = float(rho * np.linalg.norm(z - z_old))
 
-        eps_prim = np.sqrt(n_w) * tol_abs + tol_rel * max(np.linalg.norm(w), np.linalg.norm(z))
-        eps_dual = np.sqrt(n_w) * tol_abs + tol_rel * rho * np.linalg.norm(u)
+        eps_prim = float(np.sqrt(n_w) * tol_abs + tol_rel * max(np.linalg.norm(w), np.linalg.norm(z)))
+        eps_dual = float(np.sqrt(n_w) * tol_abs + tol_rel * rho * np.linalg.norm(u))
 
         if primal_res < eps_prim and dual_res < eps_dual:
             status = "optimal"
             break
 
-        if verbose and it % 500 == 0:
-            print(f"  [ADMM] iter={it:6d}  prim={primal_res:.3e}  dual={dual_res:.3e}")
+        # ── Adaptive rho (Boyd et al. §3.4.1) ─────────────────────────────────
+        if adaptive_rho and it % adapt_interval == 0:
+            rho_changed = False
+            if primal_res > ADMM_RHO_ADAPT_MU * dual_res and rho < 1e6:
+                rho *= 2.0
+                u /= 2.0
+                rho_changed = True
+            elif dual_res > ADMM_RHO_ADAPT_MU * primal_res and rho > 1e-6:
+                rho /= 2.0
+                u *= 2.0
+                rho_changed = True
+
+            if rho_changed:
+                try:
+                    factor = _factor_kkt(rho)
+                except Exception:
+                    pass
 
     x_sol = w[:n]
+
+    # ── Solution polishing ────────────────────────────────────────────────────
+    if polish and status == "optimal":
+        try:
+            # Active bounds: z_j near lower or upper bound
+            act_lb = (z[:n] <= problem.lb + 1e-4) & np.isfinite(problem.lb)
+            act_ub = (z[:n] >= problem.ub - 1e-4) & np.isfinite(problem.ub)
+            act_vars = act_lb | act_ub
+            free_vars = ~act_vars
+
+            # Active inequalities (slack close to 0)
+            act_ineq = (z[n:] <= 1e-4) if m_ub > 0 else np.zeros(0, dtype=bool)
+
+            # Assemble active constraints
+            A_active_parts = []
+            b_active_parts = []
+            if m_eq > 0:
+                A_active_parts.append(problem.A_eq)
+                b_active_parts.append(problem.b_eq)
+            if m_ub > 0 and act_ineq.any():
+                A_active_parts.append(problem.A_ub[act_ineq])
+                b_active_parts.append(problem.b_ub[act_ineq])
+
+            if free_vars.any():
+                free_idx = np.where(free_vars)[0]
+                act_idx = np.where(act_vars)[0]
+
+                Q_ff = problem.Q[np.ix_(free_idx, free_idx)].tocsc()
+                c_f = problem.c[free_idx].copy()
+
+                if len(act_idx) > 0:
+                    x_act = np.where(act_lb[act_idx], problem.lb[act_idx], problem.ub[act_idx])
+                    c_f += problem.Q[np.ix_(free_idx, act_idx)].dot(x_act)
+                else:
+                    x_act = np.zeros(0)
+
+                if A_active_parts:
+                    A_act_mat = sp.vstack(A_active_parts, format="csr")
+                    b_act_vec = np.concatenate(b_active_parts)
+                    m_act = A_act_mat.shape[0]
+
+                    A_act_f = A_act_mat[:, free_idx]
+                    b_act_eff = b_act_vec.copy()
+                    if len(act_idx) > 0:
+                        b_act_eff -= A_act_mat[:, act_idx].dot(x_act)
+
+                    K_top = sp.hstack([Q_ff, A_act_f.T], format="csr")
+                    K_bot = sp.hstack([A_act_f, sp.csr_matrix((m_act, m_act))], format="csr")
+                    K_polish = sp.vstack([K_top, K_bot], format="csc")
+                    rhs_polish = np.concatenate([-c_f, b_act_eff])
+
+                    sol_polish = spla.spsolve(K_polish, rhs_polish)
+                    x_free_pol = sol_polish[:len(free_idx)]
+                else:
+                    K_polish = Q_ff + 1e-10 * sp.eye(len(free_idx), format="csc")
+                    x_free_pol = spla.spsolve(K_polish, -c_f)
+
+                x_polished = x_sol.copy()
+                x_polished[free_idx] = x_free_pol
+                if len(act_idx) > 0:
+                    x_polished[act_idx] = x_act
+
+                x_polished = np.clip(
+                    x_polished,
+                    np.where(np.isfinite(problem.lb), problem.lb, -1e30),
+                    np.where(np.isfinite(problem.ub), problem.ub, 1e30),
+                )
+
+                # Feasibility check: only accept if inequality constraints hold
+                feas = True
+                if m_ub > 0:
+                    ub_viol = problem.A_ub.dot(x_polished) - problem.b_ub
+                    if np.any(ub_viol > 1e-4):
+                        feas = False
+                if m_eq > 0:
+                    eq_viol = np.abs(problem.A_eq.dot(x_polished) - problem.b_eq)
+                    if np.any(eq_viol > 1e-4):
+                        feas = False
+
+                if feas:
+                    x_sol = x_polished
+        except Exception:
+            pass
+
+    x_sol = np.clip(
+        x_sol,
+        np.where(np.isfinite(problem.lb), problem.lb, -1e30),
+        np.where(np.isfinite(problem.ub), problem.ub, 1e30),
+    )
     obj = float(0.5 * x_sol @ (problem.Q @ x_sol) + problem.c @ x_sol)
 
-    return QPResult(status, x_sol, obj, it, primal_res, dual_res)
+    return QPResult(status, x_sol, obj, it, primal_res, dual_res, u=u[:n])
 
 
 # ── Convenience constructor ───────────────────────────────────────────────────
@@ -219,7 +334,6 @@ def make_qp(
 ) -> QPProblem:
     """
     Construct a QPProblem from dense/sparse inputs.
-
     Q may be None (LP case), in which case a zero matrix is used.
     """
     c = np.asarray(c, dtype=float)

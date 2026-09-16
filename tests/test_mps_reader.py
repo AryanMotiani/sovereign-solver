@@ -189,7 +189,7 @@ def test_mps_ranges_no_exception(tmp_path):
 
 # ── 6. Cross-check against HiGHS on a Netlib instance ────────────────────────
 
-NETLIB_AFIRO_URL = "https://raw.githubusercontent.com/coin-or/COIN-OR-OptimizationSuite/master/Data/Netlib/afiro.mps"
+NETLIB_AFIRO_URL = "https://raw.githubusercontent.com/coin-or-tools/Data-Sample/master/afiro.mps"
 AFIRO_PATH = INST_DIR / "afiro.mps"
 
 def _try_download_afiro():

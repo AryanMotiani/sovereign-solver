@@ -28,12 +28,13 @@ References:
 
 from __future__ import annotations
 
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 import numpy as np
 import scipy.sparse as sp
 
 from solver.config import CUT_VIOLATION_MIN, MAX_CUTS_PER_ROUND
+from solver.milp.gomory import generate_gomory_cuts
 from solver.problem import Problem
 
 
@@ -82,6 +83,13 @@ def generate_mir_cuts(
     for i in range(problem.n_ineq):
         a_row = A[i].copy()
         b_i   = b[i]
+
+        # Valid MIR cut requires b_i > 0 and no negative continuous coefficients
+        if b_i < 1e-6:
+            continue
+        if np.any((~int_mask) & (a_row < -1e-6)):
+            continue
+
         f_b   = b_i - np.floor(b_i)
 
         if f_b < 1e-6 or f_b > 1.0 - 1e-6:
@@ -99,10 +107,10 @@ def generate_mir_cuts(
                 else:
                     a_mir[j] = np.floor(a_ij) + (f_a - f_b) / denom
             else:
-                # Continuous variables: only positive coefficients contribute
                 if a_ij > 0:
                     a_mir[j] = a_ij / denom
-                # Negative continuous: a_mir[j] = 0 (weakening)
+                else:
+                    a_mir[j] = 0.0
 
         b_mir = np.floor(b_i)
 
@@ -147,11 +155,16 @@ def generate_cover_cuts(
         a_row = A[i]
         b_i   = b[i]
 
-        # Only process rows where all integer-indexed coefficients are ≥ 0
+        if b_i < 1e-6:
+            continue
+        # Pure knapsack row: all nonzero coefficients must be positive integers
+        if np.any((~int_mask) & (np.abs(a_row) > 1e-8)):
+            continue
+        if np.any(a_row < -1e-8):
+            continue
+
         int_cols = np.where(int_mask & (a_row > 1e-8))[0]
         if len(int_cols) == 0:
-            continue
-        if np.any(a_row[int_cols] < 0):
             continue
 
         # Greedy cover: sort by x*/a (items contributing most fractionally)
@@ -204,14 +217,20 @@ def build_conflict_graph(
     A = problem.A_ub.toarray()
     b = problem.b_ub
     int_mask = problem.integer_mask
+    is_binary = int_mask & (problem.lb >= -1e-8) & (problem.ub <= 1.0 + 1e-8)
 
     for i in range(problem.n_ineq):
         a_row = A[i]
         b_i   = b[i]
 
-        # Only look at binary packing rows: all coefficients ≥ 1, b_i < 2
-        int_cols = np.where(int_mask & (a_row >= 1.0 - 1e-8))[0]
-        if len(int_cols) < 2 or b_i >= 2.0 - 1e-8:
+        # Only look at binary packing rows: RHS in [1, 2), no negative coefficients
+        if b_i < 0.99 or b_i >= 2.0 - 1e-8:
+            continue
+        if np.any(a_row < -1e-8):
+            continue
+
+        int_cols = np.where(is_binary & (a_row >= 1.0 - 1e-8))[0]
+        if len(int_cols) < 2:
             continue
 
         # All pairs in this row conflict
@@ -292,18 +311,20 @@ def generate_clique_cuts(
 def generate_all_cuts(
     problem: Problem,
     x_star: np.ndarray,
+    basis: Optional[np.ndarray] = None,
     max_total: int = MAX_CUTS_PER_ROUND,
 ) -> List[CutRow]:
     """
-    Run all three cut generators and return the top violations.
+    Run all four cut generators (MIR, Cover, Clique, Gomory) and return top violations.
 
     Cuts are sorted by violation (descending) and the top `max_total` are returned.
     """
-    per_generator = max_total // 3 + 1
+    per_generator = max_total // 4 + 1
     cuts: List[CutRow] = []
     cuts.extend(generate_mir_cuts(problem, x_star, per_generator))
     cuts.extend(generate_cover_cuts(problem, x_star, per_generator))
     cuts.extend(generate_clique_cuts(problem, x_star, per_generator))
+    cuts.extend(generate_gomory_cuts(problem, x_star, basis=basis, max_cuts=per_generator))
 
     # Score and deduplicate
     scored = []

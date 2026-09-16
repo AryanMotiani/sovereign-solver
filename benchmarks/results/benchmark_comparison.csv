@@ -1,0 +1,43 @@
+category,problem,n_vars,n_cons,solver,status,objective,highs_obj,rel_gap,time_s,iters_nodes
+Netlib LP,afiro,32,27,HiGHS (C++),optimal,-464.75314286,-464.75314286,0.00e+00,0.000441,0
+Netlib LP,afiro,32,27,Sovereign Simplex,optimal,-464.75314286,-464.75314286,0.00e+00,0.002299,15
+Netlib LP,afiro,32,27,Sovereign IPM,optimal,-464.75211591,-464.75314286,2.21e-06,0.003482,8
+Netlib LP,afiro,32,27,Sovereign PDHG,optimal,-464.75314109,-464.75314286,3.80e-09,0.050555,8950
+Netlib LP,brandy,249,220,HiGHS (C++),optimal,1518.50989649,1518.50989649,0.00e+00,0.002994,0
+Netlib LP,brandy,249,220,Sovereign Simplex,optimal,1518.50989649,1518.50989649,1.35e-15,0.311804,1966
+Netlib LP,brandy,249,220,Sovereign IPM,optimal,1518.51466053,1518.50989649,3.14e-06,0.133100,48
+Netlib LP,brandy,249,220,Sovereign PDHG,iteration_limit,1521.20660887,1518.50989649,1.78e-03,0.213448,25000
+Netlib LP,adlittle,97,56,HiGHS (C++),optimal,225494.96316238,225494.96316238,0.00e+00,0.000873,0
+Netlib LP,adlittle,97,56,Sovereign Simplex,optimal,225494.96316238,225494.96316238,6.45e-16,0.016079,118
+Netlib LP,adlittle,97,56,Sovereign IPM,optimal,225496.00568839,225494.96316238,4.62e-06,0.005733,10
+Netlib LP,adlittle,97,56,Sovereign PDHG,iteration_limit,225255.19439650,225494.96316238,1.06e-03,0.160440,25000
+Netlib LP,blending,2,2,HiGHS (C++),optimal,-3200.00000000,-3200.00000000,0.00e+00,0.000136,0
+Netlib LP,blending,2,2,Sovereign Simplex,optimal,-3200.00000000,-3200.00000000,1.42e-16,0.000449,2
+Netlib LP,blending,2,2,Sovereign IPM,optimal,-3199.99901931,-3200.00000000,3.06e-07,0.002182,6
+Netlib LP,blending,2,2,Sovereign PDHG,optimal,-3200.00034671,-3200.00000000,1.08e-07,0.003329,550
+MIPLIB,exmip1,8,7,HiGHS (C++),optimal,3.23684211,3.23684211,0.00e+00,0.000223,0
+MIPLIB,exmip1,8,7,Sovereign Branch-and-Cut,optimal,3.23684211,3.23684211,1.37e-16,0.001705,1
+MIPLIB,p0033,33,16,HiGHS (C++),optimal,3089.00000000,3089.00000000,0.00e+00,0.010887,0
+MIPLIB,p0033,33,16,Sovereign Branch-and-Cut,optimal,3089.00000000,3089.00000000,5.89e-16,18.874669,1297
+MIPLIB,p0548,548,176,HiGHS (C++),optimal,8691.00000000,8691.00000000,0.00e+00,0.036282,0
+MIPLIB,p0548,548,176,Sovereign Branch-and-Cut,time_limit,inf,8691.00000000,nan,33.647215,0
+Stress LP,random_n50_m30,50,80,HiGHS (C++),optimal,-86.40173887,-86.40173887,0.00e+00,0.000956,0
+Stress LP,random_n50_m30,50,80,Sovereign Simplex,optimal,-86.40173887,-86.40173887,1.64e-16,0.003330,18
+Stress LP,random_n50_m30,50,80,Sovereign IPM,optimal,-86.40172660,-86.40173887,1.42e-07,0.008487,10
+Stress LP,random_n50_m30,50,80,Sovereign PDHG,optimal,-86.40174329,-86.40173887,5.12e-08,0.072641,9200
+Stress LP,sparse_n500_m250,500,750,HiGHS (C++),optimal,-2746.29381468,-2746.29381468,0.00e+00,0.005082,0
+Stress LP,sparse_n500_m250,500,750,Sovereign Simplex,optimal,-2746.29381468,-2746.29381468,3.31e-16,2.617557,11499
+Stress LP,sparse_n500_m250,500,750,Sovereign IPM,optimal,-2746.23703797,-2746.29381468,2.07e-05,0.554059,12
+Stress LP,sparse_n500_m250,500,750,Sovereign PDHG,optimal,-2746.29406232,-2746.29381468,9.02e-08,0.707564,51800
+Stress LP,badly_scaled_1e8,4,3,HiGHS (C++),optimal,0.00000000,0.00000000,0.00e+00,0.000196,0
+Stress LP,badly_scaled_1e8,4,3,Sovereign Simplex,optimal,0.00000000,0.00000000,0.00e+00,0.000333,0
+Stress LP,badly_scaled_1e8,4,3,Sovereign IPM,iteration_limit,0.00135455,0.00000000,1.35e-03,0.083102,200
+Stress LP,badly_scaled_1e8,4,3,Sovereign PDHG,iteration_limit,4.15371241,0.00000000,4.15e+00,0.564556,100000
+Domain Application,crude_blend_lp,3,3,HiGHS (C++),optimal,109000.00000000,109000.00000000,0.00e+00,0.000176,0
+Domain Application,crude_blend_lp,3,3,Sovereign Simplex,optimal,109000.00000000,109000.00000000,0.00e+00,0.000618,3
+Domain Application,crude_blend_lp,3,3,Sovereign IPM,optimal,109000.00251117,109000.00000000,2.30e-08,0.002726,6
+Domain Application,refinery_schedule_milp,30,38,HiGHS (C++),optimal,-791191.66666667,-791191.66666667,0.00e+00,0.000434,0
+Domain Application,refinery_schedule_milp,30,38,Sovereign Branch-and-Cut,optimal,-791191.66666667,-791191.66666667,0.00e+00,0.012511,1
+QP ADMM,qp_n10,10,5,Sovereign ADMM,optimal,-0.23943810,-0.23943810,0.00e+00,0.001051,32
+QP ADMM,qp_n25,25,12,Sovereign ADMM,optimal,-0.97278589,-0.97278589,0.00e+00,0.001360,56
+QP ADMM,qp_n50,50,25,Sovereign ADMM,optimal,-0.49904945,-0.49904945,0.00e+00,0.002017,97

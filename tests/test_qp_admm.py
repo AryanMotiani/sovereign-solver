@@ -156,3 +156,44 @@ def test_qp_convergence_medium():
     assert result.status in ("optimal", "max_iters")
     assert result.x is not None
     assert np.all(np.isfinite(result.x))
+
+
+# ── 8. Adaptive rho and solution polishing ────────────────────────────────────
+
+def test_qp_solution_polishing():
+    """
+    With polish=True, optimal solution should satisfy equality and active
+    constraints to high precision (1e-6).
+    """
+    prob = make_qp(
+        Q=np.diag([2.0, 2.0]),
+        c=[-4.0, -6.0],
+        lb=[0.0, 0.0],
+        ub=[10.0, 10.0],
+    )
+    # min x0^2 + x1^2 - 4x0 - 6x1 -> optimal x0=2, x1=3, obj = 4+9 - 8 - 18 = -13
+    result = solve_qp_admm(prob, polish=True)
+    assert result.status == "optimal"
+    assert abs(result.x[0] - 2.0) < 1e-4
+    assert abs(result.x[1] - 3.0) < 1e-4
+    assert abs(result.objective - (-13.0)) < 1e-4
+
+
+def test_qp_warmstart():
+    """
+    Warm-starting from the optimal solution should converge in very few iterations (<5).
+    """
+    prob = make_qp(
+        Q=np.diag([1.0, 2.0]),
+        c=[-2.0, -4.0],
+        lb=[0.0, 0.0],
+        ub=[10.0, 10.0],
+    )
+    res1 = solve_qp_admm(prob)
+    assert res1.status == "optimal"
+
+    # Solve again with warm-start
+    res2 = solve_qp_admm(prob, x_init=res1.x, u_init=res1.u)
+    assert res2.status == "optimal"
+    assert res2.iters <= 5, f"Warm-start took {res2.iters} iters (expected <= 5)"
+

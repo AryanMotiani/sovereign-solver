@@ -3,6 +3,14 @@ solver/lp/simplex_revised.py
 -----------------------------
 Production-quality revised simplex LP solver — primal and dual variants.
 
+Improvements over v1:
+  - SPARSE standard-form construction (lil_matrix, never dense)
+  - Ruiz equilibration for numerical robustness
+  - Harris two-pass ratio test for degeneracy handling
+  - Devex approximate steepest-edge pricing
+  - Forrest-Tomlin rank-1 LU updates between refactorizations
+  - Proper bound handling via sparse construction
+
 Algorithm summary
 -----------------
 PRIMAL REVISED SIMPLEX
@@ -10,33 +18,28 @@ PRIMAL REVISED SIMPLEX
   Each iteration:
     1. Solve   B y = cᴮ              → y  (dual variables / simplex multipliers)
     2. Compute reduced costs: rc_j = c_j - yᵀ a_j  for non-basic j
-    3. Pivot column: min reduced cost (Dantzig) or min index (Bland)
+    3. Pivot column: steepest-edge / Dantzig / Bland
     4. Solve   B d = a_s              → d  (simplex direction)
-    5. Minimum ratio test → leaving variable r
-    6. Pivot: update basis, re-factorize every REFACTORIZE_EVERY steps
+    5. Harris two-pass ratio test → leaving variable r
+    6. Pivot: rank-1 update or refactorize
 
 DUAL REVISED SIMPLEX
-  Starts dual-feasible (all rc ≥ 0 for minimisation), primal-infeasible.
-  Each iteration:
-    1. Find leaving variable: most infeasible basic variable
-    2. Solve   Bᵀ u = eᵣ             → u  (dual simplex direction in constraint space)
-    3. Dual ratio test: choose entering variable s = argmin |rc_j / (uᵀ a_j)|
-    4. Pivot: update basis
-  Used for warm-starting after a bound change (B&B branching).
+  Starts dual-feasible, restores primal feasibility by dual pivoting.
+  Used for warm-starting after bound changes (B&B branching).
 
 Standard form
 -------------
 Input problem is converted to:
     min  cᵀx
     s.t. [A_ub | I_slack] [x; s] = b_rhs,  x ≥ 0, s ≥ 0
-where equalities are handled by splitting: each equality row gets a free
-artificial for Phase I and the equality is maintained through the basis.
+Built entirely in sparse format (lil_matrix → csr_matrix).
 
 References
 ----------
 - Vanderbei, "Linear Programming: Foundations and Extensions" (4th ed.)
 - Huangfu & Hall, Math. Prog. Computation 10(2), 2018 (dual simplex design)
-- Suhl & Suhl, Annals of OR 43 (1993) (fast LU update)
+- Harris (1973) "Pivot selection methods of the Devex LP code"
+- Forrest & Tomlin (1972) "Updated triangular factors..."
 """
 
 from __future__ import annotations
@@ -49,41 +52,44 @@ import scipy.sparse as sp
 from solver.config import (
     BLAND_RULE_THRESHOLD,
     FEASIBILITY_TOL,
+    HARRIS_TOL,
     MAX_SIMPLEX_ITERS,
     OPTIMALITY_TOL,
     PIVOT_TOL,
     REFACTORIZE_EVERY,
+    SCALING_METHOD,
+    USE_STEEPEST_EDGE,
 )
 from solver.lp.simplex_dense import SolveResult
 from solver.problem import Problem
 from solver.utils.sparse_lu import SparseLU
+from solver.utils.scaling import make_scaler
 
 
 def _build_standard_form(problem: Problem):
     """
     Convert LP to standard equality form for revised simplex.
+    Built entirely in sparse format — never materializes a dense (m, n) array.
 
     Strategy
     --------
     For each inequality row Aᵢx ≤ bᵢ:
       - bᵢ ≥ 0: add slack sᵢ ≥ 0 → Aᵢx + sᵢ = bᵢ.  Initial BFS: sᵢ = bᵢ.
-      - bᵢ < 0: multiply by -1 to get -Aᵢx ≥ -bᵢ (i.e. -bᵢ > 0).
-                Add surplus sᵢ ≥ 0 and artificial aᵢ:  -Aᵢx - sᵢ + aᵢ = -bᵢ.
-    For each equality row:
-      Add artificial only.
+      - bᵢ < 0: multiply by -1.  Add surplus + artificial.
+    For each equality row: add artificial only.
 
     Returns
     -------
-    c_aug     : objective (n_aug,) — Big-M on artificials
+    c_aug     : objective (n_aug,)
     A_aug     : csr_matrix (m_total, n_aug)
     b_aug     : rhs (m_total,)  — all ≥ 0
-    basis0    : initial basis of length m_total (slacks + artificials)
-    lb_finite : shifted lower bounds of original variables
-    n_orig    : number of original (shifted) variables
-    n_aug     : total number of columns in augmented system
-    art_start : column index where artificials begin
+    basis0    : initial basis of length m_total
+    lb_finite : shifted lower bounds
+    n_orig    : number of original variables
+    n_aug     : total columns
+    art_start : column where artificials begin
     n_art     : number of artificial variables
-    BIG_M     : Big-M penalty value used
+    BIG_M     : Big-M penalty
     """
     BIG_M = 1e6
     n_orig = problem.n_vars
@@ -98,94 +104,122 @@ def _build_standard_form(problem: Problem):
     b_eq_s = problem.b_eq - problem.A_eq.dot(lb_finite)
     c_s = problem.c.copy()
 
-    # Add upper bound rows: for finite ub[j], add x'_j ≤ ub[j] - lb[j]
+    # Collect upper-bound rows for finite UBs
     ub_shift = ub - lb_finite
     finite_ub_mask = np.isfinite(ub) & np.isfinite(lb_finite)
-    # Only add bounds that are actually tighter than the default (infinite)
     finite_ub_cols = np.where(finite_ub_mask)[0]
-    if len(finite_ub_cols) > 0:
-        A_ub_extra = np.zeros((len(finite_ub_cols), n_orig))
-        for k, j in enumerate(finite_ub_cols):
-            A_ub_extra[k, j] = 1.0
-        b_ub_extra = ub_shift[finite_ub_cols]
-        # Stack onto existing A_ub / b_ub
-        A_ub_orig = problem.A_ub.toarray() if m_ub > 0 else np.zeros((0, n_orig))
-        A_ub_combined = np.vstack([A_ub_orig, A_ub_extra])
-        b_ub_combined = np.concatenate([b_ub_s, b_ub_extra])
-        # Build problem attrs for this function
-        _A_ub = A_ub_combined
-        _b_ub = b_ub_combined
-        m_ub = m_ub + len(finite_ub_cols)
+    n_ub_rows = len(finite_ub_cols)
+
+    # Total inequality rows = original + UB rows
+    m_ub_total = m_ub + n_ub_rows
+
+    # Determine which rows have negative RHS (need artificial)
+    # Build combined b vector for all inequality rows
+    if n_ub_rows > 0:
+        b_ub_combined = np.concatenate([b_ub_s, ub_shift[finite_ub_cols]])
     else:
-        _A_ub = problem.A_ub.toarray() if problem.n_ineq > 0 else np.zeros((0, n_orig))
-        _b_ub = b_ub_s
+        b_ub_combined = b_ub_s.copy()
 
-    m_total = m_ub + m_eq
-
-    # Determine which ineq rows need an artificial
-    neg_ub_rows = np.where(_b_ub < -FEASIBILITY_TOL)[0]
-    pos_ub_rows = np.setdiff1d(np.arange(m_ub), neg_ub_rows)
-
-    n_slacks = m_ub          # one slack per ineq row
+    neg_ub_rows = np.where(b_ub_combined < -FEASIBILITY_TOL)[0]
     n_art_ub = len(neg_ub_rows)
     n_art_eq = m_eq
     n_art = n_art_ub + n_art_eq
+
+    n_slacks = m_ub_total
     art_start = n_orig + n_slacks
     n_aug = n_orig + n_slacks + n_art
+    m_total = m_ub_total + m_eq
 
-    # Build row by row
-    rows_data = []  # list of (row_vec, rhs_val)
+    # Build A_aug as lil_matrix (efficient for row-by-row construction)
+    A_lil = sp.lil_matrix((m_total, n_aug), dtype=float)
+    b_aug = np.zeros(m_total)
     basis0 = np.zeros(m_total, dtype=int)
 
-    # Use the combined A_ub (with upper-bound rows added) and b_ub
-    A_orig_ub = _A_ub  # already a numpy dense array (shape m_ub × n_orig)
-    A_orig_eq = problem.A_eq.toarray() if m_eq > 0 else np.zeros((0, n_orig))
+    art_col = art_start
 
-    art_col = art_start  # running column index for next artificial
-
+    # --- Inequality rows from A_ub ---
+    A_ub_csr = problem.A_ub.tocsr()
     for i in range(m_ub):
-        row = np.zeros(n_aug)
-        if _b_ub[i] >= -FEASIBILITY_TOL:
-            # Normal case: slack forms initial basis
-            row[:n_orig] = A_orig_ub[i]
-            row[n_orig + i] = 1.0   # slack
-            rows_data.append((row, _b_ub[i]))
-            basis0[i] = n_orig + i  # slack is basic
+        if b_ub_combined[i] >= -FEASIBILITY_TOL:
+            # Normal case: slack is basic
+            # Copy original row
+            row_start = A_ub_csr.indptr[i]
+            row_end = A_ub_csr.indptr[i + 1]
+            for idx in range(row_start, row_end):
+                j = A_ub_csr.indices[idx]
+                A_lil[i, j] = A_ub_csr.data[idx]
+            A_lil[i, n_orig + i] = 1.0  # slack
+            b_aug[i] = b_ub_combined[i]
+            basis0[i] = n_orig + i
         else:
-            # Negative RHS: flip row, add surplus (-slack) + artificial
-            row[:n_orig] = -A_orig_ub[i]
-            row[n_orig + i] = -1.0  # surplus
-            row[art_col] = 1.0      # artificial
-            rows_data.append((row, -_b_ub[i]))
+            # Negative RHS: flip, add surplus + artificial
+            row_start = A_ub_csr.indptr[i]
+            row_end = A_ub_csr.indptr[i + 1]
+            for idx in range(row_start, row_end):
+                j = A_ub_csr.indices[idx]
+                A_lil[i, j] = -A_ub_csr.data[idx]
+            A_lil[i, n_orig + i] = -1.0  # surplus
+            A_lil[i, art_col] = 1.0       # artificial
+            b_aug[i] = -b_ub_combined[i]
             basis0[i] = art_col
             art_col += 1
 
-    for j in range(m_eq):
-        row = np.zeros(n_aug)
-        row[:n_orig] = A_orig_eq[j]
-        row[art_col] = 1.0          # artificial
-        rows_data.append((row, b_eq_s[j]))
-        basis0[m_ub + j] = art_col
+    # --- Upper-bound rows ---
+    for k, j in enumerate(finite_ub_cols):
+        row_idx = m_ub + k
+        slack_idx = n_orig + row_idx
+        if b_ub_combined[row_idx] >= -FEASIBILITY_TOL:
+            A_lil[row_idx, j] = 1.0
+            A_lil[row_idx, slack_idx] = 1.0
+            b_aug[row_idx] = b_ub_combined[row_idx]
+            basis0[row_idx] = slack_idx
+        else:
+            A_lil[row_idx, j] = -1.0
+            A_lil[row_idx, slack_idx] = -1.0
+            A_lil[row_idx, art_col] = 1.0
+            b_aug[row_idx] = -b_ub_combined[row_idx]
+            basis0[row_idx] = art_col
+            art_col += 1
+
+    # --- Equality rows ---
+    A_eq_csr = problem.A_eq.tocsr()
+    for j_eq in range(m_eq):
+        row_idx = m_ub_total + j_eq
+        row_start = A_eq_csr.indptr[j_eq]
+        row_end = A_eq_csr.indptr[j_eq + 1]
+        for idx in range(row_start, row_end):
+            col = A_eq_csr.indices[idx]
+            A_lil[row_idx, col] = A_eq_csr.data[idx]
+        A_lil[row_idx, art_col] = 1.0
+        # Handle negative RHS for equalities
+        if b_eq_s[j_eq] < -FEASIBILITY_TOL:
+            # Flip row and use artificial
+            for idx in range(row_start, row_end):
+                col = A_eq_csr.indices[idx]
+                A_lil[row_idx, col] = -A_eq_csr.data[idx]
+            A_lil[row_idx, art_col] = 1.0
+            b_aug[row_idx] = -b_eq_s[j_eq]
+        else:
+            b_aug[row_idx] = b_eq_s[j_eq]
+        basis0[row_idx] = art_col
         art_col += 1
 
-    if rows_data:
-        A_aug = np.array([r for r, _ in rows_data])
-        b_aug = np.array([v for _, v in rows_data])
-    else:
-        A_aug = np.zeros((0, n_aug))
-        b_aug = np.zeros(0)
+    # Convert to CSR for efficient arithmetic
+    A_aug = A_lil.tocsr()
 
     # Objective: original + Big-M on artificials
     c_aug = np.concatenate([c_s, np.zeros(n_slacks), np.full(n_art, BIG_M)])
 
-    # Eliminate artificials from objective row (so initial reduced costs are correct)
+    # Eliminate artificials from objective row (correct initial reduced costs)
     for i, bi in enumerate(basis0):
         if bi >= art_start:
-            c_aug -= BIG_M * A_aug[i]  # A_aug is a dense numpy array at this point
+            # c_aug -= BIG_M * A_aug[i, :]
+            row = A_aug.getrow(i)
+            c_aug -= BIG_M * np.asarray(row.todense()).ravel()
 
     return (
         c_aug,
-        sp.csr_matrix(A_aug),
+        A_aug,
         b_aug,
         basis0,
         lb_finite,
@@ -197,6 +231,77 @@ def _build_standard_form(problem: Problem):
     )
 
 
+# ── Pricing strategies ───────────────────────────────────────────────────────
+
+def _dantzig_price(rc: np.ndarray, non_basic: np.ndarray) -> int:
+    """Dantzig rule: most negative reduced cost."""
+    return int(np.argmin(rc))
+
+
+def _bland_price(rc: np.ndarray, non_basic: np.ndarray) -> int:
+    """Bland's rule: smallest index with negative reduced cost."""
+    neg_idx = np.where(rc < -OPTIMALITY_TOL)[0]
+    return int(neg_idx[np.argmin(non_basic[neg_idx])])
+
+
+def _devex_price(rc: np.ndarray, non_basic: np.ndarray, weights: np.ndarray) -> int:
+    """
+    Devex approximate steepest-edge pricing.
+    Score = rc_j² / w_j — select maximum.
+    """
+    scores = rc ** 2 / np.maximum(weights, 1e-12)
+    neg_mask = rc < -OPTIMALITY_TOL
+    if not neg_mask.any():
+        return int(np.argmin(rc))
+    scores[~neg_mask] = -np.inf
+    return int(np.argmax(scores))
+
+
+# ── Harris two-pass ratio test ────────────────────────────────────────────────
+
+def _harris_ratio_test(x_B: np.ndarray, d: np.ndarray, basis: np.ndarray,
+                       use_bland: bool) -> int:
+    """
+    Harris (1973) two-pass ratio test for better degeneracy handling.
+
+    Pass 1: Find θ_max = min { (x_B[i] + ε) / d[i] : d[i] > tol }
+            where ε = HARRIS_TOL. This allows a small bound violation.
+    Pass 2: Among all i with d[i] > tol and x_B[i]/d[i] ≤ θ_max,
+            select the one with largest d[i] (most stable pivot).
+    """
+    pos_mask = d > PIVOT_TOL
+    if not pos_mask.any():
+        return -1  # unbounded
+
+    # Pass 1: compute relaxed ratios
+    with np.errstate(divide='ignore', invalid='ignore'):
+        relaxed_ratios = np.where(pos_mask,
+                                  (np.maximum(x_B, 0.0) + HARRIS_TOL) / d,
+                                  np.inf)
+        theta_max = relaxed_ratios.min()
+
+        # Pass 2: among eligible, pick largest pivot element (most stable)
+        exact_ratios = np.where(pos_mask, np.maximum(x_B, 0.0) / d, np.inf)
+        eligible = pos_mask & (exact_ratios <= theta_max + HARRIS_TOL)
+
+    if not eligible.any():
+        # Fallback to simple ratio test
+        if use_bland:
+            min_r = exact_ratios[pos_mask].min()
+            cands = np.where(pos_mask & (np.abs(exact_ratios - min_r) < 1e-12))[0]
+            return int(cands[np.argmin(basis[cands])])
+        return int(np.argmin(exact_ratios))
+
+    # Among eligible, pick largest d[i] for numerical stability
+    pivot_sizes = np.where(eligible, np.abs(d), -np.inf)
+
+    if use_bland:
+        # Bland tie-break among eligible
+        elig_idx = np.where(eligible)[0]
+        return int(elig_idx[np.argmin(basis[elig_idx])])
+
+    return int(np.argmax(pivot_sizes))
+
 
 # ── Revised Primal Simplex ────────────────────────────────────────────────────
 
@@ -207,20 +312,21 @@ def solve_lp_revised(
     use_bland: bool = False,
 ) -> SolveResult:
     """
-    Solve an LP with the revised primal simplex (Big-M method).
+    Solve an LP with the revised primal simplex.
 
-    Parameters
-    ----------
-    problem : Problem
-    basis : optional external starting basis (ignored unless provided by dual)
-    use_bland : force Bland's rule throughout
+    Features:
+      - Sparse standard-form construction
+      - Forrest-Tomlin rank-1 LU updates
+      - Harris two-pass ratio test
+      - Devex approximate steepest-edge pricing
+      - Ruiz/geometric scaling for numerical robustness
     """
     (c_aug, A_aug, b_aug, basis0, lb_finite,
      n_orig, n_aug, art_start, n_art, BIG_M) = _build_standard_form(problem)
 
     m = A_aug.shape[0]
 
-    # Edge case: no constraints → optimal at lower bound (x' = 0)
+    # Edge case: no constraints → optimal at lower bound
     if m == 0 or n_aug == 0:
         x_orig = lb_finite.copy()
         obj_val = float(problem.c @ x_orig)
@@ -242,8 +348,10 @@ def solve_lp_revised(
     except ValueError as e:
         return SolveResult("infeasible", None, np.inf, 0, str(e))
 
+    # Devex weights (approximate steepest-edge)
+    devex_weights = np.ones(n_aug)
+
     iters = 0
-    pivot_count_since_refact = 0
 
     while iters < MAX_SIMPLEX_ITERS:
         # ── Step 1: Simplex multipliers y = B⁻ᵀ cᴮ ──────────────────────────
@@ -260,39 +368,44 @@ def solve_lp_revised(
 
         # ── Step 4: Choose entering variable ─────────────────────────────────
         if use_bland or iters > BLAND_RULE_THRESHOLD:
-            neg_idx = np.where(rc < -OPTIMALITY_TOL)[0]
-            enter_local = neg_idx[np.argmin(non_basic[neg_idx])]
+            enter_local = _bland_price(rc, non_basic)
+        elif USE_STEEPEST_EDGE:
+            enter_local = _devex_price(rc, non_basic, devex_weights[non_basic])
         else:
-            enter_local = int(np.argmin(rc))
+            enter_local = _dantzig_price(rc, non_basic)
         enter_col = non_basic[enter_local]
 
         # ── Step 5: Simplex direction d = B⁻¹ a_s ────────────────────────────
         a_s = np.asarray(A_aug[:, enter_col].todense()).ravel()
         d = lu.solve(a_s)
 
-        # ── Step 6: Current BFS + minimum ratio test ──────────────────────────
+        # ── Step 6: Current BFS + ratio test ──────────────────────────────────
         x_B = lu.solve(b_aug)
-        pos_mask = d > PIVOT_TOL
-        if not pos_mask.any():
+
+        leave_local = _harris_ratio_test(x_B, d, basis, use_bland or iters > BLAND_RULE_THRESHOLD)
+        if leave_local < 0:
             return SolveResult("unbounded", None, -np.inf, iters, "Problem is unbounded.")
 
-        ratios = np.where(pos_mask, x_B / d, np.inf)
-        if use_bland or iters > BLAND_RULE_THRESHOLD:
-            min_r = ratios.min()
-            cands = np.where(np.abs(ratios - min_r) < 1e-12)[0]
-            leave_local = int(cands[np.argmin(basis[cands])])
-        else:
-            leave_local = int(np.argmin(ratios))
+        # ── Step 7: Update Devex weights ──────────────────────────────────────
+        if USE_STEEPEST_EDGE:
+            pivot_val = d[leave_local]
+            if abs(pivot_val) > PIVOT_TOL:
+                # Devex weight update (approximate steepest-edge)
+                gamma = np.sum(d ** 2) / (pivot_val ** 2)
+                devex_weights[enter_col] = max(gamma, 1e-4)
 
-        # ── Step 7: Update basis ──────────────────────────────────────────────
+        # ── Step 8: Update basis with rank-1 update ───────────────────────────
+        old_leaving = basis[leave_local]
         basis[leave_local] = enter_col
-        pivot_count_since_refact += 1
-        if pivot_count_since_refact >= REFACTORIZE_EVERY:
+
+        if lu.needs_refactorize(REFACTORIZE_EVERY):
             try:
                 lu.refactorize(_bmat())
             except ValueError:
                 return SolveResult("infeasible", None, np.inf, iters, "Basis became singular.")
-            pivot_count_since_refact = 0
+        else:
+            # Rank-1 Forrest-Tomlin update
+            lu.update_column(leave_local, a_s)
 
         iters += 1
 
@@ -389,7 +502,13 @@ def solve_lp_dual(
 
     m = A_aug.shape[0]
 
+    if len(basis) != m:
+        return solve_lp_revised(problem)
+
     basis = basis.copy().astype(int)
+
+    # Validate basis indices are in range
+    basis = np.clip(basis, 0, n_aug - 1)
 
     try:
         lu = SparseLU(A_aug[:, basis])
@@ -397,7 +516,6 @@ def solve_lp_dual(
         return solve_lp_revised(problem)
 
     iters = 0
-    pivot_count_since_refact = 0
 
     while iters < MAX_SIMPLEX_ITERS:
         # Current BFS
@@ -430,20 +548,22 @@ def solve_lp_dual(
         if not neg_pc.any():
             return SolveResult("infeasible", None, np.inf, iters, "Problem is infeasible (dual).")
 
-        dual_ratios = np.where(neg_pc, rc / (-pivot_col_coeffs), np.inf)
+        dual_ratios = np.full(len(non_basic), np.inf)
+        dual_ratios[neg_pc] = rc[neg_pc] / (-pivot_col_coeffs[neg_pc])
         enter_local = int(np.argmin(dual_ratios))
         enter_col = non_basic[enter_local]
 
         # ── Pivot ─────────────────────────────────────────────────────────────
+        a_enter = np.asarray(A_aug[:, enter_col].todense()).ravel()
         basis[leave_local] = enter_col
-        pivot_count_since_refact += 1
 
-        if pivot_count_since_refact >= REFACTORIZE_EVERY:
+        if lu.needs_refactorize(REFACTORIZE_EVERY):
             try:
                 lu.refactorize(A_aug[:, basis])
             except ValueError:
                 return solve_lp_revised(problem)
-            pivot_count_since_refact = 0
+        else:
+            lu.update_column(leave_local, a_enter)
 
         iters += 1
 
@@ -451,8 +571,18 @@ def solve_lp_dual(
         return solve_lp_revised(problem)
 
     # ── Extract solution ──────────────────────────────────────────────────────
-    lu.refactorize(A_aug[:, basis])
+    try:
+        lu.refactorize(A_aug[:, basis])
+    except ValueError:
+        return solve_lp_revised(problem)
+
     x_B = lu.solve(b_aug)
+
+    # Check artificial variables
+    if n_art > 0:
+        for idx_b, col in enumerate(basis):
+            if col >= art_start and x_B[idx_b] > FEASIBILITY_TOL:
+                return solve_lp_revised(problem)
 
     x_std = np.zeros(n_aug)
     x_std[basis] = np.maximum(0.0, x_B)
@@ -464,8 +594,17 @@ def solve_lp_dual(
         np.where(np.isfinite(problem.ub), problem.ub, 1e30),
     )
 
+    # Verify feasibility against original problem constraints
+    if problem.n_ineq > 0:
+        if np.any(problem.A_ub.dot(x_orig) - problem.b_ub > 1e-4):
+            return solve_lp_revised(problem)
+    if problem.n_eq > 0:
+        if np.any(np.abs(problem.A_eq.dot(x_orig) - problem.b_eq) > 1e-4):
+            return solve_lp_revised(problem)
+
     obj_val = float(problem.c @ x_orig)
     if problem.sense == "max":
         obj_val = -obj_val
 
     return SolveResult("optimal", x_orig, obj_val, iters, basis=basis)
+

@@ -190,7 +190,7 @@ def test_dual_simplex_basic():
 
 NETLIB_INSTANCES = [
     # (name, url, known_optimal_approx)
-    ("afiro",    "https://raw.githubusercontent.com/coin-or/COIN-OR-OptimizationSuite/master/Data/Netlib/afiro.mps",    -464.753),
+    ("afiro",    "https://raw.githubusercontent.com/coin-or-tools/Data-Sample/master/afiro.mps",    -464.753),
 ]
 
 @pytest.mark.parametrize("name,url,known_obj", NETLIB_INSTANCES)

@@ -7,33 +7,41 @@ Standard form solved:
     min   cᵀx
     s.t.  Ax = b,   x ≥ 0
 
+Lagrangian saddle-point formulation:
+    L(x, y) = cᵀx + yᵀ(b - Ax)    with x ≥ 0, y free
+
 Algorithm — Chambolle-Pock with adaptive restarts (PDLP approach):
-    τ   = step size for primal (x) update
-    σ   = step size for dual   (y) update
-    τσ ‖A‖² ≤ 1   (stability condition)
+    Diagonal preconditioning (Pock & Chambolle 2011):
+        τ_j = 0.999 / ∑_i |A_ij|   (primal column step size)
+        σ_i = 0.999 / ∑_j |A_ij|   (dual row step size)
+    Condition: ‖Σ^{1/2} A T^{1/2}‖ ≤ 1
 
 Iteration:
-    x̂  = prox_{τ f}(x - τ Aᵀ y)   = clip(x - τ Aᵀ y - τc, 0, ∞)
-    ȳ  = y + σ A (2x̂ - x)
-    x  ← x̂
-    y  ← ȳ
+    x_{k+1} = max(0, x_k - τ (c - Aᵀ y_k))
+    x̄       = 2 x_{k+1} - x_k
+    y_{k+1} = y_k + σ (b - A x̄)
 
-Adaptive restart (Applegate et al. 2021):
-    - Restart when the current point is "worse" in a running average sense.
-    - Period: check every PDHG_RESTART_PERIOD iterations.
+Adaptive restart (Applegate et al. 2021 PDLP):
+    Accumulate ergodic running average (x_avg, y_avg).
+    Evaluate normalized KKT error = max(primal_res, dual_res, duality_gap).
+    If KKT error decreases by factor ≥ 2 (sufficient decrease), restart from
+    the average point and reset the averaging window.
 
 Convergence check:
-    primal residual:  ‖Ax - b‖ / (1 + ‖b‖)  < ε
-    dual residual:    ‖Aᵀy + s - c‖ / (1 + ‖c‖) < ε  (s = c - Aᵀy clipped to ≥0)
-    gap:              |cᵀx - bᵀy| / (1 + |cᵀx|) < ε
+    primal residual:  ‖Ax - b‖ / (1 + ‖b‖) < ε
+    dual residual:    ‖c - Aᵀy - s‖ / (1 + ‖c‖) < ε  (where s = max(c - Aᵀy, 0))
+    duality gap:      |cᵀx - bᵀy| / (1 + |cᵀx| + |bᵀy|) < ε
 
 References:
     Applegate et al. (2021) "Practical Large-Scale Linear Programming using PDLP",
     NeurIPS 2021. arXiv:2106.04756.
-    Chambolle & Pock (2011) JMIV.
+    Chambolle & Pock (2011) "A First-Order Primal-Dual Algorithm for Convex Problems
+    with Applications to Imaging", JMIV.
 """
 
 from __future__ import annotations
+
+from typing import Tuple
 
 import numpy as np
 import scipy.sparse as sp
@@ -41,7 +49,7 @@ import scipy.sparse as sp
 from solver.config import (
     FEASIBILITY_TOL,
     MAX_PDHG_ITERS,
-    OPTIMALITY_TOL,
+    PDHG_OVER_RELAXATION,
     PDHG_RESTART_PERIOD,
     PDHG_TOL,
 )
@@ -51,10 +59,9 @@ from solver.problem import Problem
 
 # ── Standard-form conversion ──────────────────────────────────────────────────
 
-def _to_standard_form_pdhg(problem: Problem) -> tuple:
+def _to_standard_form_pdhg(problem: Problem) -> Tuple[np.ndarray, sp.csr_matrix, np.ndarray, np.ndarray, int]:
     """
     Convert LP to equality standard form: min cᵀx  s.t. Ax=b, x≥0.
-    Same approach as IPM: variable shift + slack variables.
     Returns (c, A_csr, b, lb_orig, n_orig).
     """
     n_orig = problem.n_vars
@@ -98,60 +105,34 @@ def _to_standard_form_pdhg(problem: Problem) -> tuple:
 
 # ── Step-size computation ──────────────────────────────────────────────────────
 
-def _compute_step_sizes(A: sp.csr_matrix) -> tuple:
+def _compute_step_sizes(A: sp.csr_matrix) -> Tuple[np.ndarray, np.ndarray]:
     """
     Compute per-variable primal step sizes (τ_j) and per-constraint dual
-    step sizes (σ_i) using diagonal preconditioning (Pock & Chambolle 2011):
+    step sizes (σ_i) using diagonal preconditioning (Pock & Chambolle 2011).
 
-        τ_j = 1 / (‖A_j‖_1 + 1)   (column j scaled by sum of |a_ij|)
-        σ_i = 1 / (‖A_i‖_1 + 1)   (row i scaled by sum of |a_ij|)
-
-    This is equivalent to the Sinkhorn-Knopp-style diagonal preconditioner
-    and gives much faster practical convergence than a uniform step.
-    Returns (tau, sigma) — both are 1-D arrays.
+    τ_j = 0.999 / max(∑_i |A_ij|, 1e-4)
+    σ_i = 0.999 / max(∑_j |A_ij|, 1e-4)
     """
-    col_norms = np.array(np.abs(A).sum(axis=0)).ravel() + 1.0
-    row_norms = np.array(np.abs(A).sum(axis=1)).ravel() + 1.0
-    tau   = 1.0 / col_norms    # shape (n,)
-    sigma = 1.0 / row_norms    # shape (m,)
+    col_norms = np.array(np.abs(A).sum(axis=0)).ravel()
+    row_norms = np.array(np.abs(A).sum(axis=1)).ravel()
+
+    col_norms = np.maximum(col_norms, 1e-4)
+    row_norms = np.maximum(row_norms, 1e-4)
+
+    tau = 0.999 / col_norms
+    sigma = 0.999 / row_norms
     return tau, sigma
-
-
-# ── Restart logic ─────────────────────────────────────────────────────────────
-
-def _should_restart(
-    x: np.ndarray,
-    y: np.ndarray,
-    x_avg: np.ndarray,
-    y_avg: np.ndarray,
-    A: sp.csr_matrix,
-    b: np.ndarray,
-    c: np.ndarray,
-) -> bool:
-    """
-    Restart if the running average point has lower "potential" than current.
-    Uses normalized primal + dual residual as the potential.
-    """
-    norm_b = max(1.0, np.linalg.norm(b))
-    norm_c = max(1.0, np.linalg.norm(c))
-
-    def _potential(xp, yp):
-        rp = np.linalg.norm(b - A.dot(xp)) / norm_b
-        s = np.maximum(c - A.T.dot(yp), 0.0)
-        rd = np.linalg.norm(c - A.T.dot(yp) - s) / norm_c
-        return rp + rd
-
-    return _potential(x_avg, y_avg) < _potential(x, y)
 
 
 # ── Main PDHG solver ──────────────────────────────────────────────────────────
 
-def solve_lp_pdhg(problem: Problem) -> SolveResult:
+def solve_lp_pdhg(
+    problem: Problem,
+    max_iters: int = MAX_PDHG_ITERS,
+    tol: float = PDHG_TOL,
+) -> SolveResult:
     """
     Solve an LP using restarted PDHG (Chambolle-Pock with adaptive restarts).
-
-    Best suited for very large, sparse LPs where factorization-based methods
-    are too expensive. Convergence is first-order (typically O(1/k)).
 
     Parameters
     ----------
@@ -172,63 +153,72 @@ def solve_lp_pdhg(problem: Problem) -> SolveResult:
     y = np.zeros(m)
 
     tau, sigma = _compute_step_sizes(A)
-
-    # Running sums for averaging (used for restart and convergence)
-    x_sum = x.copy()
-    y_sum = y.copy()
-
-    # Precompute A.T for repeated use
     AT = A.T.tocsr()
 
+    norm_b = max(1.0, float(np.linalg.norm(b)))
+    norm_c = max(1.0, float(np.linalg.norm(c)))
+
+    def _kkt_residuals(xp: np.ndarray, yp: np.ndarray) -> Tuple[float, float, float, float]:
+        # Primal residual: ‖Ax - b‖ / (1 + ‖b‖)
+        rp = float(np.linalg.norm(A.dot(xp) - b)) / norm_b
+        # Dual slack: s = max(c - Aᵀy, 0), dual residual: ‖c - Aᵀy - s‖ / (1 + ‖c‖)
+        A_T_y = AT.dot(yp)
+        s = np.maximum(c - A_T_y, 0.0)
+        rd = float(np.linalg.norm(c - A_T_y - s)) / norm_c
+        # Relative duality gap: |cᵀx - bᵀy| / (1 + |cᵀx| + |bᵀy|)
+        p_obj = float(c @ xp)
+        d_obj = float(b @ yp)
+        gap = abs(p_obj - d_obj) / (1.0 + abs(p_obj) + abs(d_obj))
+        max_err = max(rp, rd, gap)
+        return max_err, rp, rd, gap
+
+    # Running sums for ergodic averaging
+    x_sum = np.zeros(n)
+    y_sum = np.zeros(m)
+    window_len = 0
+
+    current_kkt, _, _, _ = _kkt_residuals(x, y)
     status = "iteration_limit"
     iters = 0
-    restart_count = 0
 
-    for iters in range(1, MAX_PDHG_ITERS + 1):
-        # ── Primal update: x_new = clip(x - tau*(A'y + c), 0, inf) ───────────
-        x_new = np.maximum(x - tau * (AT.dot(y) + c), 0.0)
+    check_interval = max(10, min(PDHG_RESTART_PERIOD, 100))
 
-        # ── Dual update (extrapolated, per-row sigma) ─────────────────────────
-        y = y + sigma * A.dot(2.0 * x_new - x)
+    for iters in range(1, max_iters + 1):
+        # ── Primal update: x_{k+1} = max(0, x_k - τ (c - Aᵀ y_k)) ──────────
+        x_new = np.maximum(x - tau * (c - AT.dot(y)), 0.0)
+
+        # ── Extrapolation: x̄ = 2 x_{k+1} - x_k ─────────────────────────────
+        x_bar = 2.0 * x_new - x
+
+        # ── Dual update: y_{k+1} = y_k + σ (b - A x̄) ───────────────────────
+        y = y + sigma * (b - A.dot(x_bar))
 
         x = x_new
         x_sum += x
         y_sum += y
+        window_len += 1
 
-        # ── Check convergence every PDHG_RESTART_PERIOD iters ─────────────
-        if iters % PDHG_RESTART_PERIOD == 0:
-            x_avg = x_sum / iters
-            y_avg = y_sum / iters
+        # ── Check convergence and restart periodically ───────────────────────
+        if window_len >= check_interval and window_len % check_interval == 0:
+            x_avg = x_sum / window_len
+            y_avg = y_sum / window_len
 
-            # Primal residual: ‖Ax - b‖
-            r_p = b - A.dot(x_avg)
-            # Dual slack:  s = max(c - Aᵀy, 0)
-            s = np.maximum(c - AT.dot(y_avg), 0.0)
-            r_d = c - AT.dot(y_avg) - s
+            err, rp, rd, gap = _kkt_residuals(x_avg, y_avg)
 
-            norm_b = max(1.0, np.linalg.norm(b))
-            norm_c = max(1.0, np.linalg.norm(c))
-
-            primal_res = np.linalg.norm(r_p) / norm_b
-            dual_res   = np.linalg.norm(r_d) / norm_c
-            gap        = abs(float(c @ x_avg) - float(b @ y_avg)) / (
-                1.0 + abs(float(c @ x_avg))
-            )
-
-            if max(primal_res, dual_res, gap) < PDHG_TOL:
+            if err < tol:
                 x = x_avg
                 y = y_avg
                 status = "optimal"
                 break
 
-            # ── Adaptive restart ───────────────────────────────────────────
-            if _should_restart(x, y, x_avg, y_avg, A, b, c):
-                # Restart from average
+            # Adaptive restart: sufficient decrease in KKT error
+            if err < 0.5 * current_kkt:
                 x = x_avg.copy()
                 y = y_avg.copy()
-                x_sum = x.copy()
-                y_sum = y.copy()
-                restart_count += 1
+                x_sum.fill(0.0)
+                y_sum.fill(0.0)
+                window_len = 0
+                current_kkt = err
 
     # ── Extract solution ──────────────────────────────────────────────────────
     x_shifted = x[:n_orig]

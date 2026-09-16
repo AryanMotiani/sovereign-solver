@@ -181,6 +181,67 @@ def test_presolve_obj_matches_direct(c, A_ub, b_ub, A_eq, b_eq):
     )
 
 
+def test_presolve_multi_variable_bound_tightening():
+    """
+    Implied bound tightening:
+    2*x0 + 3*x1 <= 6 with x0, x1 >= 0 implies x0 <= 3 and x1 <= 2.
+    """
+    prob = make_problem(
+        c=[1.0, 1.0],
+        A_ub=[[2.0, 3.0]],
+        b_ub=[6.0],
+    )
+    result = presolve(prob)
+    assert not result.infeasible
+    # x0 should have ub <= 3.0 + 1e-5, x1 should have ub <= 2.0 + 1e-5
+    assert result.problem.ub[0] <= 3.0 + 1e-4
+    assert result.problem.ub[1] <= 2.0 + 1e-4
+
+
+def test_presolve_parallel_rows():
+    """
+    Parallel row detection:
+    Row 1: x0 + x1 <= 4
+    Row 2: 2*x0 + 2*x1 <= 10 (which is x0 + x1 <= 5, redundant)
+    Row 2 should be eliminated.
+    """
+    prob = make_problem(
+        c=[1.0, 1.0],
+        A_ub=[[1.0, 1.0], [2.0, 2.0]],
+        b_ub=[4.0, 10.0],
+    )
+    result = presolve(prob)
+    assert not result.infeasible
+    assert result.problem.n_ineq == 1
+    assert result.problem.b_ub[0] == 4.0
+
+
+def test_presolve_probing_binary():
+    """
+    Binary variable probing:
+    x0, x1 in {0, 1}
+    x0 + x1 <= 1
+    -x0 - 2*x1 <= -1.5 (i.e. x0 + 2*x1 >= 1.5)
+    If x1 = 0: x0 >= 1.5 (impossible since x0 in {0, 1}) -> x1 must be 1!
+    When x1 = 1: x0 + 1 <= 1 -> x0 = 0.
+    """
+    prob = Problem(
+        c=np.array([1.0, 1.0]),
+        A_ub=sp.csr_matrix([[1.0, 1.0], [-1.0, -2.0]]),
+        b_ub=np.array([1.0, -1.5]),
+        A_eq=sp.csr_matrix((0, 2)),
+        b_eq=np.zeros(0),
+        lb=np.zeros(2),
+        ub=np.ones(2),
+        integer_mask=np.array([True, True]),
+    )
+    result = presolve(prob)
+    assert not result.infeasible
+    # At least one variable should be fixed by probing
+    assert result.n_fixed >= 1
+
+
+
 # ── 6. No-op presolve (trivial problem) ──────────────────────────────────────
 
 def test_presolve_noop_passthrough():

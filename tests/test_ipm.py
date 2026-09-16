@@ -167,3 +167,39 @@ def test_ipm_random_lp_vs_simplex():
         assert diff < 0.1, (
             f"Random LP: IPM={ipm_res.objective:.6g}, simplex={simp_res.objective:.6g}"
         )
+
+
+def test_ipm_with_upper_bounds():
+    """
+    Test LP where variables have finite upper bounds in problem.ub:
+    min -x0 - 2x1 s.t. x0 <= 3, x1 <= 4, x0, x1 >= 0.
+    Optimal: x0=3, x1=4, obj=-11.
+    """
+    prob = make_lp(
+        c=[-1.0, -2.0],
+        A_ub_dense=np.zeros((0, 2)),
+        b_ub=np.zeros(0),
+        ub=[3.0, 4.0],
+    )
+    result = solve_lp_ipm(prob)
+    assert result.status == "optimal"
+    assert result.x is not None
+    assert abs(result.objective - (-11.0)) < 1e-2
+    assert abs(result.x[0] - 3.0) < 1e-2
+    assert abs(result.x[1] - 4.0) < 1e-2
+
+
+def test_ipm_crossover():
+    """
+    Verify crossover produces a basic solution with basis.
+    """
+    prob = make_lp(
+        c=[-3.0, -5.0],
+        A_ub_dense=[[1.0, 0.0], [0.0, 2.0], [3.0, 2.0]],
+        b_ub=[4.0, 12.0, 18.0],
+    )
+    result = solve_lp_ipm(prob, crossover=True)
+    assert result.status == "optimal"
+    assert result.basis is not None
+    assert abs(result.objective - (-36.0)) < 1e-4
+

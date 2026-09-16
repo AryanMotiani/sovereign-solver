@@ -256,6 +256,151 @@ def presolve(problem: Problem, max_rounds: int = 10) -> PresolveResult:
                     n_rows_removed += 1
                     changed = True
 
+            # General multi-variable row implied bound tightening
+            elif nonzero_mask.sum() > 1:
+                row_full = A_ub_d[i]
+                pos = (row_full > FEASIBILITY_TOL) & active_cols
+                neg = (row_full < -FEASIBILITY_TOL) & active_cols
+
+                if np.all(np.isfinite(lb[pos])) and np.all(np.isfinite(ub[neg])):
+                    L_i = float(np.sum(row_full[pos] * lb[pos]) + np.sum(row_full[neg] * ub[neg]))
+                    if L_i > b_ub[i] + FEASIBILITY_TOL:
+                        infeasible = True
+                        infeasibility_reason = f"Row {i} minimal activity {L_i:.4f} > b={b_ub[i]:.4f}"
+                        break
+
+                    slack = b_ub[i] - L_i
+                    for j in np.where(pos)[0]:
+                        a_ij = row_full[j]
+                        ub_implied = lb[j] + slack / a_ij
+                        if problem.integer_mask[j]:
+                            ub_implied = np.floor(ub_implied + 1e-9)
+                        if ub_implied < ub[j] - FEASIBILITY_TOL:
+                            actions.append(BoundTightenAction(int(j), lb[j], ub[j], lb[j], float(ub_implied)))
+                            ub[j] = float(ub_implied)
+                            n_bound_tightened += 1
+                            changed = True
+
+                    for j in np.where(neg)[0]:
+                        a_ij = row_full[j]
+                        lb_implied = ub[j] + slack / a_ij
+                        if problem.integer_mask[j]:
+                            lb_implied = np.ceil(lb_implied - 1e-9)
+                        if lb_implied > lb[j] + FEASIBILITY_TOL:
+                            actions.append(BoundTightenAction(int(j), lb[j], ub[j], float(lb_implied), ub[j]))
+                            lb[j] = float(lb_implied)
+                            n_bound_tightened += 1
+                            changed = True
+
+        if infeasible:
+            break
+
+        # ── Reduction 6: Parallel inequality row detection ────────────────────
+        active_ub_indices = np.where(active_ub_rows)[0]
+        for idx1 in range(len(active_ub_indices)):
+            i1 = active_ub_indices[idx1]
+            if not active_ub_rows[i1]:
+                continue
+            row1 = A_ub_d[i1]
+            nz1 = np.where(np.abs(row1) > FEASIBILITY_TOL)[0]
+            if len(nz1) == 0:
+                continue
+
+            k0 = nz1[0]
+            val1 = row1[k0]
+
+            for idx2 in range(idx1 + 1, len(active_ub_indices)):
+                i2 = active_ub_indices[idx2]
+                if not active_ub_rows[i2]:
+                    continue
+                row2 = A_ub_d[i2]
+                val2 = row2[k0]
+                if abs(val2) < FEASIBILITY_TOL:
+                    continue
+
+                gamma = val2 / val1
+                if gamma <= 0:
+                    continue
+
+                # Check if entire row is proportional by gamma
+                if np.allclose(row2, gamma * row1, atol=FEASIBILITY_TOL):
+                    rhs1_eff = b_ub[i1]
+                    rhs2_eff = b_ub[i2] / gamma
+
+                    if rhs1_eff <= rhs2_eff + FEASIBILITY_TOL:
+                        # Row i2 is redundant
+                        active_ub_rows[i2] = False
+                        n_rows_removed += 1
+                        changed = True
+                    else:
+                        # Row i1 is redundant
+                        active_ub_rows[i1] = False
+                        n_rows_removed += 1
+                        changed = True
+                        break
+
+        # ── Reduction 7: Binary variable probing ──────────────────────────────
+        binary_mask = (
+            problem.integer_mask
+            & active_cols
+            & (np.abs(lb) < FEASIBILITY_TOL)
+            & (np.abs(ub - 1.0) < FEASIBILITY_TOL)
+        )
+        binary_vars = np.where(binary_mask)[0]
+
+        for k in binary_vars:
+            if not active_cols[k]:
+                continue
+
+            # Probe fixing x_k = 0
+            infeas_0 = False
+            for i in np.where(active_ub_rows)[0]:
+                row = A_ub_d[i]
+                pos = (row > FEASIBILITY_TOL) & active_cols
+                neg = (row < -FEASIBILITY_TOL) & active_cols
+                if np.all(np.isfinite(lb[pos])) and np.all(np.isfinite(ub[neg])):
+                    # Evaluate min LHS with x_k = 0
+                    lb_probe = lb.copy()
+                    ub_probe = ub.copy()
+                    lb_probe[k] = 0.0
+                    ub_probe[k] = 0.0
+                    L_0 = float(np.sum(row[pos] * lb_probe[pos]) + np.sum(row[neg] * ub_probe[neg]))
+                    if L_0 > b_ub[i] + FEASIBILITY_TOL:
+                        infeas_0 = True
+                        break
+
+            if infeas_0:
+                # x_k must be 1
+                lb[k] = 1.0
+                ub[k] = 1.0
+                n_bound_tightened += 1
+                changed = True
+                continue
+
+            # Probe fixing x_k = 1
+            infeas_1 = False
+            for i in np.where(active_ub_rows)[0]:
+                row = A_ub_d[i]
+                pos = (row > FEASIBILITY_TOL) & active_cols
+                neg = (row < -FEASIBILITY_TOL) & active_cols
+                if np.all(np.isfinite(lb[pos])) and np.all(np.isfinite(ub[neg])):
+                    # Evaluate min LHS with x_k = 1
+                    lb_probe = lb.copy()
+                    ub_probe = ub.copy()
+                    lb_probe[k] = 1.0
+                    ub_probe[k] = 1.0
+                    L_1 = float(np.sum(row[pos] * lb_probe[pos]) + np.sum(row[neg] * ub_probe[neg]))
+                    if L_1 > b_ub[i] + FEASIBILITY_TOL:
+                        infeas_1 = True
+                        break
+
+            if infeas_1:
+                # x_k must be 0
+                lb[k] = 0.0
+                ub[k] = 0.0
+                n_bound_tightened += 1
+                changed = True
+
         if not changed:
             break
 
