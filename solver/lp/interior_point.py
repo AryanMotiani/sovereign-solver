@@ -101,6 +101,7 @@ def _to_standard_form_ipm(problem: Problem) -> Tuple[np.ndarray, sp.csr_matrix, 
         rows.append(A_ub_ext)
         b_parts.append(b_ub_s)
 
+
     # 2. Variable upper bounds: x'_j + s_ub = ub_j - lb_j
     if n_ub_rows > 0:
         ub_shift = ub[finite_ub_cols] - lb_finite[finite_ub_cols]
@@ -123,6 +124,7 @@ def _to_standard_form_ipm(problem: Problem) -> Tuple[np.ndarray, sp.csr_matrix, 
     A_full = sp.vstack(rows, format="csr")
     b_full = np.concatenate(b_parts)
 
+
     # Flip rows with negative RHS
     neg = b_full < -FEASIBILITY_TOL
     if neg.any():
@@ -133,6 +135,7 @@ def _to_standard_form_ipm(problem: Problem) -> Tuple[np.ndarray, sp.csr_matrix, 
 
     c_full = np.concatenate([c_s, np.zeros(total_slacks)])
     return c_full, A_full, b_full, lb_finite, n_orig
+
 
 
 # ── IPM numerics ──────────────────────────────────────────────────────────────

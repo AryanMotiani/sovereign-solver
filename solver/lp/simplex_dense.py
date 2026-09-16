@@ -208,7 +208,8 @@ def solve_lp_dense(problem: Problem, big_m: float = 1e6) -> SolveResult:
         if not positive_mask.any():
             return SolveResult("unbounded", None, -np.inf, iters, "Unbounded problem detected.")
 
-        ratios = np.where(positive_mask, rhs_vals / col_vals, np.inf)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            ratios = np.where(positive_mask, rhs_vals / col_vals, np.inf)
 
         if iters > BLAND_RULE_THRESHOLD:
             # Bland's tie-breaking: smallest basis index

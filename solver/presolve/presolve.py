@@ -84,6 +84,63 @@ class PresolveResult:
     infeasibility_reason: str = ""
 
 
+# ── Probing helper ────────────────────────────────────────────────────────────
+
+def _probe_binary(
+    j: int, value: float,
+    lb: np.ndarray, ub: np.ndarray,
+    A_ub_d: np.ndarray, b_ub: np.ndarray,
+    A_eq_d: np.ndarray, b_eq: np.ndarray,
+    active_ub_rows: np.ndarray, active_eq_rows: np.ndarray,
+    active_cols: np.ndarray,
+) -> bool:
+    """
+    Probe variable j fixed to `value` (0 or 1).
+    Returns True if the resulting problem may be feasible
+    (no obvious bound violation or constraint infeasibility).
+    Returns False if a contradiction is detected.
+
+    Uses a cheap propagation: substitute x_j=value into all rows,
+    check if any active inequality b_ub becomes violated at maximum
+    of remaining variables.
+    """
+    # Effective RHS after substituting x_j = value
+    b_ub_p = b_ub.copy()
+    b_eq_p = b_eq.copy()
+    for i in np.where(active_ub_rows)[0]:
+        b_ub_p[i] -= A_ub_d[i, j] * value
+    for i in np.where(active_eq_rows)[0]:
+        b_eq_p[i] -= A_eq_d[i, j] * value
+
+    # Quick feasibility check: for active equality rows with only
+    # inactive columns (all zero after removing j), b must be ~0.
+    temp_active_cols = active_cols.copy()
+    temp_active_cols[j] = False
+
+    for i in np.where(active_eq_rows)[0]:
+        row = A_eq_d[i, temp_active_cols]
+        if np.all(np.abs(row) < FEASIBILITY_TOL):
+            if abs(b_eq_p[i]) > FEASIBILITY_TOL:
+                return False  # infeasible
+
+    # For inequality rows: check if maximum achievable LHS can meet b_ub_p
+    for i in np.where(active_ub_rows)[0]:
+        row = A_ub_d[i, :]
+        # Minimum value of row @ x (x_j=value fixed):
+        # For positive coefs use lb, negative use ub
+        min_val = 0.0
+        for k in np.where(temp_active_cols)[0]:
+            a = A_ub_d[i, k]
+            if a > FEASIBILITY_TOL:
+                min_val += a * lb[k]
+            elif a < -FEASIBILITY_TOL:
+                min_val += a * ub[k]
+        if min_val > b_ub_p[i] + FEASIBILITY_TOL:
+            return False  # even minimum LHS exceeds b_ub_p → infeasible
+
+    return True
+
+
 # ── Presolve pass ─────────────────────────────────────────────────────────────
 
 def presolve(problem: Problem, max_rounds: int = 10) -> PresolveResult:

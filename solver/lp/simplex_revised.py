@@ -394,6 +394,7 @@ def solve_lp_revised(
                 gamma = np.sum(d ** 2) / (pivot_val ** 2)
                 devex_weights[enter_col] = max(gamma, 1e-4)
 
+
         # ── Step 8: Update basis with rank-1 update ───────────────────────────
         old_leaving = basis[leave_local]
         basis[leave_local] = enter_col

@@ -34,13 +34,25 @@ class Solver:
 
     def __init__(self) -> None:
         self.problem: Optional[Problem] = None
-        self._result: Optional[SolveResult] = None
+        self._result = None
 
     # ── Problem loading ───────────────────────────────────────────────────────
 
     def read_mps(self, path: str) -> "Solver":
         """Load a problem from an MPS file. Returns self for chaining."""
         self.problem = read_mps(path)
+        return self
+
+    def read_lp(self, path: str) -> "Solver":
+        """Load a problem from an LP format file. Returns self for chaining."""
+        from solver.io.lp_reader import read_lp as _read_lp
+        self.problem = _read_lp(path)
+        return self
+
+    def read_qps(self, path: str) -> "Solver":
+        """Load a QP from a QPS file (MPS + QUADOBJ section). Returns self."""
+        from solver.io.qps_reader import read_qps as _read_qps
+        self.problem = _read_qps(path)
         return self
 
     def set_problem(self, problem: Problem) -> "Solver":
@@ -51,7 +63,7 @@ class Solver:
 
     # ── Solve ─────────────────────────────────────────────────────────────────
 
-    def solve(self, method: str = "auto") -> SolveResult:
+    def solve(self, method: str = "auto"):
         """
         Solve the currently loaded problem.
 
@@ -64,12 +76,12 @@ class Solver:
             - 'revised' : revised sparse simplex (Phase 1B)
             - 'ipm'     : Mehrotra interior-point (Phase 1B)
             - 'pdhg'    : first-order PDHG (Phase 1C)
-            - 'milp'    : branch-and-cut (Phase 2B+)
+            - 'milp'    : branch-and-cut (Phase 2B+, with presolve/cuts/heuristics)
             - 'qp'      : ADMM (Phase 4A)
 
         Returns
         -------
-        SolveResult
+        SolveResult | MILPSolveResult | QPResult depending on method.
         """
         if self.problem is None:
             raise RuntimeError("No problem loaded. Call read_mps() or set_problem() first.")
@@ -82,45 +94,45 @@ class Solver:
             elif prob.is_qp:
                 method = "qp"
             else:
-                method = "simplex"  # will upgrade to 'revised' in Phase 1B
+                method = "revised"  # revised simplex is default for LP
 
         if method == "simplex":
             result = solve_lp_dense(prob)
 
         elif method == "revised":
-            try:
-                from solver.lp.simplex_revised import solve_lp_revised
-                result = solve_lp_revised(prob)
-            except ImportError:
-                raise RuntimeError("Revised simplex not yet implemented (Phase 1B).")
+            from solver.lp.simplex_revised import solve_lp_revised
+            result = solve_lp_revised(prob)
 
         elif method == "ipm":
-            try:
-                from solver.lp.interior_point import solve_lp_ipm
-                result = solve_lp_ipm(prob)
-            except ImportError:
-                raise RuntimeError("IPM not yet implemented (Phase 1B).")
+            from solver.lp.interior_point import solve_lp_ipm
+            result = solve_lp_ipm(prob)
 
         elif method == "pdhg":
-            try:
-                from solver.lp.pdhg import solve_lp_pdhg
-                result = solve_lp_pdhg(prob)
-            except ImportError:
-                raise RuntimeError("PDHG not yet implemented (Phase 1C).")
+            from solver.lp.pdhg import solve_lp_pdhg
+            result = solve_lp_pdhg(prob)
 
         elif method == "milp":
-            try:
-                from solver.milp.branch_and_bound import solve_milp
-                result = solve_milp(prob)
-            except ImportError:
-                raise RuntimeError("MILP B&B not yet implemented (Phase 2B).")
+            from solver.milp.branch_and_bound import solve_milp
+            result = solve_milp(prob)
 
         elif method == "qp":
-            try:
-                from solver.qp.admm import solve_qp_admm
-                result = solve_qp_admm(prob)
-            except ImportError:
-                raise RuntimeError("QP ADMM not yet implemented (Phase 4A).")
+            from solver.qp.admm import solve_qp_admm, make_qp, QPProblem
+            # Convert Problem → QPProblem if necessary
+            if isinstance(prob, QPProblem):
+                qp = prob
+            else:
+                Q = prob.P_qp if prob.P_qp is not None else None
+                qp = make_qp(
+                    Q=Q,
+                    c=prob.c,
+                    A_eq=prob.A_eq if prob.n_eq > 0 else None,
+                    b_eq=prob.b_eq if prob.n_eq > 0 else None,
+                    A_ub=prob.A_ub if prob.n_ineq > 0 else None,
+                    b_ub=prob.b_ub if prob.n_ineq > 0 else None,
+                    lb=prob.lb,
+                    ub=prob.ub,
+                )
+            result = solve_qp_admm(qp)
 
         else:
             raise ValueError(
@@ -134,7 +146,7 @@ class Solver:
     # ── Convenience ───────────────────────────────────────────────────────────
 
     @property
-    def result(self) -> Optional[SolveResult]:
+    def result(self):
         """The result of the last solve() call."""
         return self._result
 
