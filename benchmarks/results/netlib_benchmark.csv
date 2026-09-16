@@ -1,0 +1,5 @@
+instance,n_vars,n_ineq,known_obj,sovereign_simplex_status,sovereign_simplex_obj,sovereign_simplex_time_s,sovereign_simplex_iters,sovereign_ipm_status,sovereign_ipm_obj,sovereign_ipm_time_s,sovereign_ipm_iters,ref_solver,ref_status,ref_obj,ref_time_s,obj_match_simplex,obj_match_ipm,rel_err_simplex,rel_err_ipm
+afiro,32,19,-464.7531428,optimal,-464.75314,0.0043,15,optimal,-464.75212,0.0055,7,HiGHS,optimal,-464.75314,0.0027,True,True,1.223e-16,2.210e-06
+adlittle,97,41,225494.9631,optimal,225494.96,0.0487,153,optimal,225496.01,0.0086,9,HiGHS,optimal,225494.96,0.0011,True,True,3.872e-16,4.623e-06
+lseu,89,28,1120.0,optimal,834.68235,0.0168,66,optimal,834.69018,0.0141,11,HiGHS,optimal,1120,0.2371,False,False,2.547e-01,2.547e-01
+avgas,8,10,-69.852025,optimal,-7.75,0.0031,9,optimal,-7.7499935,0.0041,5,HiGHS,optimal,-7.75,0.0002,True,True,0.000e+00,8.395e-07

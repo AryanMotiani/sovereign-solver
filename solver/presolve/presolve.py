@@ -84,6 +84,63 @@ class PresolveResult:
     infeasibility_reason: str = ""
 
 
+# ── Probing helper ────────────────────────────────────────────────────────────
+
+def _probe_binary(
+    j: int, value: float,
+    lb: np.ndarray, ub: np.ndarray,
+    A_ub_d: np.ndarray, b_ub: np.ndarray,
+    A_eq_d: np.ndarray, b_eq: np.ndarray,
+    active_ub_rows: np.ndarray, active_eq_rows: np.ndarray,
+    active_cols: np.ndarray,
+) -> bool:
+    """
+    Probe variable j fixed to `value` (0 or 1).
+    Returns True if the resulting problem may be feasible
+    (no obvious bound violation or constraint infeasibility).
+    Returns False if a contradiction is detected.
+
+    Uses a cheap propagation: substitute x_j=value into all rows,
+    check if any active inequality b_ub becomes violated at maximum
+    of remaining variables.
+    """
+    # Effective RHS after substituting x_j = value
+    b_ub_p = b_ub.copy()
+    b_eq_p = b_eq.copy()
+    for i in np.where(active_ub_rows)[0]:
+        b_ub_p[i] -= A_ub_d[i, j] * value
+    for i in np.where(active_eq_rows)[0]:
+        b_eq_p[i] -= A_eq_d[i, j] * value
+
+    # Quick feasibility check: for active equality rows with only
+    # inactive columns (all zero after removing j), b must be ~0.
+    temp_active_cols = active_cols.copy()
+    temp_active_cols[j] = False
+
+    for i in np.where(active_eq_rows)[0]:
+        row = A_eq_d[i, temp_active_cols]
+        if np.all(np.abs(row) < FEASIBILITY_TOL):
+            if abs(b_eq_p[i]) > FEASIBILITY_TOL:
+                return False  # infeasible
+
+    # For inequality rows: check if maximum achievable LHS can meet b_ub_p
+    for i in np.where(active_ub_rows)[0]:
+        row = A_ub_d[i, :]
+        # Minimum value of row @ x (x_j=value fixed):
+        # For positive coefs use lb, negative use ub
+        min_val = 0.0
+        for k in np.where(temp_active_cols)[0]:
+            a = A_ub_d[i, k]
+            if a > FEASIBILITY_TOL:
+                min_val += a * lb[k]
+            elif a < -FEASIBILITY_TOL:
+                min_val += a * ub[k]
+        if min_val > b_ub_p[i] + FEASIBILITY_TOL:
+            return False  # even minimum LHS exceeds b_ub_p → infeasible
+
+    return True
+
+
 # ── Presolve pass ─────────────────────────────────────────────────────────────
 
 def presolve(problem: Problem, max_rounds: int = 10) -> PresolveResult:
@@ -255,6 +312,49 @@ def presolve(problem: Problem, max_rounds: int = 10) -> PresolveResult:
                     active_ub_rows[i] = False
                     n_rows_removed += 1
                     changed = True
+
+        # ── Reduction 6: Probing (binary variables) ───────────────────────────
+        # For each binary variable j: fix to 0, propagate; fix to 1, propagate.
+        # If one direction is infeasible → fix variable to the other value.
+        # If both infeasible → problem infeasible.
+        # If both agree on a bound tightening → apply it.
+        # Limit: only probe if few active binary variables (keep runtime bounded).
+        active_int_cols = [
+            j for j in np.where(active_cols)[0]
+            if problem.integer_mask[j] and abs(lb[j]) < FEASIBILITY_TOL
+            and abs(ub[j] - 1.0) < FEASIBILITY_TOL
+        ]
+        MAX_PROBE = 20  # probe at most 20 binary vars per round
+        for j in active_int_cols[:MAX_PROBE]:
+            # --- Probe x_j = 0 ---
+            feasible_0 = _probe_binary(
+                j, 0.0, lb, ub, A_ub_d, b_ub, A_eq_d, b_eq,
+                active_ub_rows, active_eq_rows, active_cols
+            )
+            # --- Probe x_j = 1 ---
+            feasible_1 = _probe_binary(
+                j, 1.0, lb, ub, A_ub_d, b_ub, A_eq_d, b_eq,
+                active_ub_rows, active_eq_rows, active_cols
+            )
+
+            if not feasible_0 and not feasible_1:
+                infeasible = True
+                infeasibility_reason = f"Probing: both x_{j}=0 and x_{j}=1 infeasible"
+                break
+            elif not feasible_0:
+                # Must have x_j = 1
+                actions.append(BoundTightenAction(j, lb[j], ub[j], 1.0, 1.0))
+                lb[j] = ub[j] = 1.0
+                n_bound_tightened += 1
+                changed = True
+            elif not feasible_1:
+                # Must have x_j = 0
+                actions.append(BoundTightenAction(j, lb[j], ub[j], 0.0, 0.0))
+                lb[j] = ub[j] = 0.0
+                n_bound_tightened += 1
+                changed = True
+        if infeasible:
+            break
 
         if not changed:
             break

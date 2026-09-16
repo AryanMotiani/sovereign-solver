@@ -3,10 +3,11 @@ solver/milp/cuts.py
 --------------------
 Cutting plane generators for MILP.
 
-Implements three families of cuts:
-  1. Mixed-Integer Rounding (MIR) cuts
-  2. Cover cuts for 0-1 knapsack rows
-  3. Clique cuts from a conflict graph
+Implements four families of cuts:
+  1. Gomory fractional cuts (Gomory 1958) — from LP tableau rows
+  2. Mixed-Integer Rounding (MIR) cuts (van Roy & Wolsey 1987)
+  3. Cover cuts for 0-1 knapsack rows
+  4. Clique cuts from a conflict graph
 
 Each generator returns a list of (a, b) pairs representing new inequalities:
     aᵀx ≤ b
@@ -40,7 +41,79 @@ from solver.problem import Problem
 CutRow = Tuple[np.ndarray, float]   # (a, b) for aᵀx ≤ b
 
 
-# ── 1. MIR cuts ───────────────────────────────────────────────────────────────
+# ── 1. Gomory fractional cuts ─────────────────────────────────────────────────
+
+def generate_gomory_cuts(
+    problem: Problem,
+    x_star: np.ndarray,
+    max_cuts: int = MAX_CUTS_PER_ROUND,
+) -> List[CutRow]:
+    """
+    Generate Gomory fractional cuts from LP inequality rows.
+
+    For a row  aᵢᵀx ≤ bᵢ  where bᵢ has fractional part fᵢ = frac(bᵢ) > 0:
+
+      Let fⱼ = frac(aᵢⱼ)  for each integer variable j.
+      Gomory cut:  Σⱼ fⱼ xⱼ ≤ fᵢ
+
+    This is the classical Gomory fractional cut from a simplex tableau row.
+    Here we approximate it from the constraint matrix rows: rows where the
+    LP solution x* has a basic integer variable with fractional value yield
+    natural cut candidates.
+
+    Note: MIR cuts are theoretically at least as strong as Gomory cuts.
+    This generator provides the classical Gomory form as an explicit family.
+
+    References:
+        Gomory (1958) "Outline of an algorithm for integer solutions to
+            linear programs", Bull. AMS 64(5).
+        Nemhauser & Wolsey (1988) "Integer Programming", Ch.7.
+    """
+    cuts: List[CutRow] = []
+    if problem.n_ineq == 0:
+        return cuts
+
+    A = problem.A_ub.toarray()
+    b = problem.b_ub
+    int_mask = problem.integer_mask
+
+    for i in range(problem.n_ineq):
+        b_i = b[i]
+        f_b = b_i - np.floor(b_i)   # fractional part of RHS
+
+        if f_b < 1e-6 or f_b > 1.0 - 1e-6:
+            continue  # integer or near-integer RHS: no cut
+
+        a_row = A[i].copy()
+
+        # Gomory cut: sum_j frac(a_ij) * x_j <= frac(b_i)
+        # Only for integer variables where frac(a_ij) > 0
+        a_gomory = np.zeros_like(a_row)
+        for j in range(len(a_row)):
+            if int_mask[j]:
+                f_a = a_row[j] - np.floor(a_row[j])
+                a_gomory[j] = f_a
+            else:
+                # For continuous variables: only positive contributions
+                if a_row[j] > 0:
+                    a_gomory[j] = a_row[j] / (1.0 - f_b)  # scaled
+
+        b_gomory = f_b
+
+        # Check that at least one integer variable has a non-zero coefficient
+        if not np.any(a_gomory[int_mask] > 1e-8):
+            continue
+
+        violation = float(a_gomory @ x_star) - b_gomory
+        if violation > CUT_VIOLATION_MIN:
+            cuts.append((a_gomory, b_gomory))
+            if len(cuts) >= max_cuts:
+                break
+
+    return cuts
+
+
+# ── 2. MIR cuts ───────────────────────────────────────────────────────────────
 
 def generate_mir_cuts(
     problem: Problem,
@@ -295,12 +368,18 @@ def generate_all_cuts(
     max_total: int = MAX_CUTS_PER_ROUND,
 ) -> List[CutRow]:
     """
-    Run all three cut generators and return the top violations.
+    Run all four cut generators (Gomory, MIR, cover, clique) and return
+    the top `max_total` cuts sorted by violation (descending).
 
-    Cuts are sorted by violation (descending) and the top `max_total` are returned.
+    Cut families:
+      - Gomory: classical fractional cuts (explicit family, required by spec)
+      - MIR: mixed-integer rounding cuts (stronger in general than Gomory)
+      - Cover: 0-1 knapsack cover cuts
+      - Clique: conflict-graph clique cuts
     """
-    per_generator = max_total // 3 + 1
+    per_generator = max_total // 4 + 1
     cuts: List[CutRow] = []
+    cuts.extend(generate_gomory_cuts(problem, x_star, per_generator))
     cuts.extend(generate_mir_cuts(problem, x_star, per_generator))
     cuts.extend(generate_cover_cuts(problem, x_star, per_generator))
     cuts.extend(generate_clique_cuts(problem, x_star, per_generator))

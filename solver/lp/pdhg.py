@@ -55,6 +55,10 @@ def _to_standard_form_pdhg(problem: Problem) -> tuple:
     """
     Convert LP to equality standard form: min cᵀx  s.t. Ax=b, x≥0.
     Same approach as IPM: variable shift + slack variables.
+
+    For finite upper bounds ub[j], adds explicit constraint row:
+        x'_j <= ub[j] - lb[j]  (shifted variable)
+
     Returns (c, A_csr, b, lb_orig, n_orig).
     """
     n_orig = problem.n_vars
@@ -67,11 +71,32 @@ def _to_standard_form_pdhg(problem: Problem) -> tuple:
     b_ub_s = problem.b_ub - problem.A_ub.dot(lb_finite)
     b_eq_s = problem.b_eq - problem.A_eq.dot(lb_finite)
 
-    n_slacks = m_ub
+    # ── Add upper-bound rows for finite ub[j] ─────────────────────────────────
+    ub = problem.ub.copy()
+    ub_shift = ub - lb_finite
+    finite_ub_mask = np.isfinite(ub) & np.isfinite(lb_finite)
+    finite_ub_cols = np.where(finite_ub_mask)[0]
+    m_ub_extra = len(finite_ub_cols)
+
+    if m_ub_extra > 0:
+        rows = np.arange(m_ub_extra)
+        cols = finite_ub_cols
+        data = np.ones(m_ub_extra)
+        A_ub_extra = sp.csr_matrix((data, (rows, cols)), shape=(m_ub_extra, n_orig))
+        b_ub_extra = ub_shift[finite_ub_cols]
+        A_ub_combined = sp.vstack([problem.A_ub, A_ub_extra], format="csr")
+        b_ub_combined = np.concatenate([b_ub_s, b_ub_extra])
+        m_ub_total = m_ub + m_ub_extra
+    else:
+        A_ub_combined = problem.A_ub
+        b_ub_combined = b_ub_s
+        m_ub_total = m_ub
+
+    n_slacks = m_ub_total
     n_full = n_orig + n_slacks
 
-    if m_ub > 0:
-        row_ub = sp.hstack([problem.A_ub, sp.eye(m_ub, format="csr")], format="csr")
+    if m_ub_total > 0:
+        row_ub = sp.hstack([A_ub_combined, sp.eye(m_ub_total, format="csr")], format="csr")
     else:
         row_ub = sp.csr_matrix((0, n_full))
 
@@ -82,7 +107,7 @@ def _to_standard_form_pdhg(problem: Problem) -> tuple:
         row_eq = sp.csr_matrix((0, n_full))
 
     A = sp.vstack([row_ub, row_eq], format="csr")
-    b = np.concatenate([b_ub_s, b_eq_s])
+    b = np.concatenate([b_ub_combined, b_eq_s])
 
     # Handle negative RHS by row negation
     neg = b < -FEASIBILITY_TOL
@@ -94,6 +119,7 @@ def _to_standard_form_pdhg(problem: Problem) -> tuple:
 
     c = np.concatenate([problem.c.copy(), np.zeros(n_slacks)])
     return c, A, b, lb_finite, n_orig
+
 
 
 # ── Step-size computation ──────────────────────────────────────────────────────

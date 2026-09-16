@@ -48,7 +48,12 @@ from solver.problem import Problem
 def _to_standard_form_ipm(problem: Problem) -> tuple:
     """
     Convert LP to equality standard form:  min cᵀx  s.t. Ax=b, x≥0.
-    Handles negative-RHS rows correctly.
+    Handles negative-RHS rows and finite upper bounds correctly.
+
+    For finite upper bounds ub[j], adds explicit constraint row:
+        x'_j <= ub[j] - lb[j]  (shifted variable)
+    as a slack row, so all x' ≥ 0 is maintained.
+
     Returns (c, A_csr, b, lb_orig, n_orig).
     """
     n_orig = problem.n_vars
@@ -62,26 +67,46 @@ def _to_standard_form_ipm(problem: Problem) -> tuple:
     b_eq_s = problem.b_eq - problem.A_eq.dot(lb_finite)
     c_s = problem.c.copy()
 
-    n_slacks = m_ub
-    n_full = n_orig + n_slacks
-    m_total = m_ub + m_eq
+    # ── Add upper-bound rows for finite ub[j] ─────────────────────────────────
+    ub = problem.ub.copy()
+    ub_shift = ub - lb_finite
+    finite_ub_mask = np.isfinite(ub) & np.isfinite(lb_finite)
+    finite_ub_cols = np.where(finite_ub_mask)[0]
+    m_ub_extra = len(finite_ub_cols)
 
-    if m_ub > 0:
-        A_ub_s = problem.A_ub
-        slk = sp.eye(m_ub, format="csr")
-        row_ub = sp.hstack([A_ub_s, slk], format="csr")
+    if m_ub_extra > 0:
+        # Build sparse identity-like rows for upper-bound constraints
+        rows = np.arange(m_ub_extra)
+        cols = finite_ub_cols
+        data = np.ones(m_ub_extra)
+        A_ub_extra = sp.csr_matrix((data, (rows, cols)), shape=(m_ub_extra, n_orig))
+        b_ub_extra = ub_shift[finite_ub_cols]
+        # Stack onto existing A_ub
+        A_ub_combined = sp.vstack([problem.A_ub, A_ub_extra], format="csr")
+        b_ub_combined = np.concatenate([b_ub_s, b_ub_extra])
+        m_ub_total = m_ub + m_ub_extra
+    else:
+        A_ub_combined = problem.A_ub
+        b_ub_combined = b_ub_s
+        m_ub_total = m_ub
+
+    n_slacks = m_ub_total
+    n_full = n_orig + n_slacks
+
+    if m_ub_total > 0:
+        slk = sp.eye(m_ub_total, format="csr")
+        row_ub = sp.hstack([A_ub_combined, slk], format="csr")
     else:
         row_ub = sp.csr_matrix((0, n_full))
 
     if m_eq > 0:
-        A_eq_s = problem.A_eq
         z = sp.csr_matrix((m_eq, n_slacks))
-        row_eq = sp.hstack([A_eq_s, z], format="csr")
+        row_eq = sp.hstack([problem.A_eq, z], format="csr")
     else:
         row_eq = sp.csr_matrix((0, n_full))
 
     A_full = sp.vstack([row_ub, row_eq], format="csr")
-    b_full = np.concatenate([b_ub_s, b_eq_s])
+    b_full = np.concatenate([b_ub_combined, b_eq_s])
 
     # Flip rows with negative RHS
     neg = b_full < -FEASIBILITY_TOL
@@ -93,6 +118,7 @@ def _to_standard_form_ipm(problem: Problem) -> tuple:
 
     c_full = np.concatenate([c_s, np.zeros(n_slacks)])
     return c_full, A_full, b_full, lb_finite, n_orig
+
 
 
 # ── IPM numerics ──────────────────────────────────────────────────────────────

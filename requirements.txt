@@ -3,3 +3,9 @@ scipy
 pytest
 matplotlib
 highspy
+fastapi
+uvicorn[standard]
+streamlit
+plotly
+pandas
+mangum

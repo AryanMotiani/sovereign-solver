@@ -276,7 +276,8 @@ def solve_lp_revised(
         if not pos_mask.any():
             return SolveResult("unbounded", None, -np.inf, iters, "Problem is unbounded.")
 
-        ratios = np.where(pos_mask, x_B / d, np.inf)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            ratios = np.where(pos_mask, x_B / d, np.inf)
         if use_bland or iters > BLAND_RULE_THRESHOLD:
             min_r = ratios.min()
             cands = np.where(np.abs(ratios - min_r) < 1e-12)[0]

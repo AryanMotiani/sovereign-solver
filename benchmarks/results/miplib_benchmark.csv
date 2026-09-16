@@ -1,0 +1,6 @@
+instance,description,n_vars,n_int,n_ineq,n_eq,sovereign_status,sovereign_obj,sovereign_lp,sovereign_gap,sovereign_nodes,sovereign_time,highs_status,highs_obj,highs_time,gap_vs_highs
+binary_knapsack_10,"0-1 knapsack, n=10 items",10,10,1,0,optimal,-129.0,-135.14666666666668,0.047282051282051346,7,0.083098200004315,optimal,-129.0,0.036070300004212186,0.0
+binary_knapsack_20,"0-1 knapsack, n=20 items",20,20,1,0,optimal,-241.0,-251.47272727272727,0.043275732531930865,25,0.4186813000123948,optimal,-241.0,0.01966359998914413,0.0
+set_cover_20,"Set covering, 20 elements, 30 sets",30,30,20,0,optimal,7.0,6.611111111111112,0.04861111111111105,23,4.184358800004702,optimal,6.999999999999998,0.03331560001242906,2.5376526277146444e-16
+facility_location_10,"Uncapacitated facility location, 10 facilities, 15 customers",160,160,150,15,optimal,433.0,433.0,0.0,1,0.20097279999754392,optimal,433.0,0.02271309998468496,0.0
+assignment_8x8,"Assignment problem, 8x8",64,64,0,16,optimal,141.0,141.0,0.0,1,0.012221099983435124,optimal,141.0,0.012219299998832867,0.0
